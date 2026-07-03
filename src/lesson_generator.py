@@ -341,7 +341,7 @@ def build_final_warning(fit_result: dict[str, Any], fallback_notice: str) -> str
     if fit_result["warning"]:
         parts.append(fit_result["warning"])
     if fallback_notice:
-        parts.append(fallback_notice)
+        parts.append("Using standard lesson mode.")
     return " ".join(parts).strip()
 
 

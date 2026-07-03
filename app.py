@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 
 from src.chatbot_logic import collect_student_preferences
-from src.config import BASE_DIR, get_database_path, get_database_warning
+from src.config import get_database_path
 from src.database import (
     create_recommendation_session,
     fetch_all_books,
@@ -50,7 +50,6 @@ def setup_page() -> None:
     st.session_state.setdefault("latest_lesson", None)
     st.session_state.setdefault("active_session_id", None)
     st.session_state.setdefault("feedback_saved", False)
-    st.session_state.setdefault("db_path_warning", get_database_warning())
 
 
 def home_page() -> None:
@@ -83,8 +82,6 @@ def home_page() -> None:
         )
 
     render_status_tip("Suggested flow", "Start with Admin, move to Student, continue to Story-Based Learning, then use Teacher Review.")
-    if st.session_state.get("db_path_warning"):
-        st.warning(st.session_state["db_path_warning"])
 
 
 def admin_page() -> None:
@@ -97,8 +94,7 @@ def admin_page() -> None:
 
     uploaded_file = st.file_uploader("Upload library catalog (.xlsx)", type=["xlsx"])
     if uploaded_file is None:
-        sample_path = BASE_DIR / "data" / "sample_catalog.xlsx"
-        render_status_tip("Need a sample file?", f"Try the example catalog first: {sample_path}")
+        render_status_tip("Upload tip", "Upload your school library Excel file here to begin.")
         return
 
     if st.button("Import Catalog", type="primary", use_container_width=True):
@@ -315,8 +311,8 @@ def story_learning_page() -> None:
             with st.form("feedback_form"):
                 recommendation_useful = st.radio("Was the recommendation useful?", ["Yes", "No"], horizontal=True)
                 lesson_understandable = st.radio("Was the lesson understandable?", ["Yes", "No"], horizontal=True)
-                story_help_learning = st.radio("Did the story help learning?", ["Yes", "No"], horizontal=True)
                 rating = st.slider("Overall rating", min_value=1, max_value=5, value=4)
+                comment = st.text_input("Optional comment")
                 feedback_submitted = st.form_submit_button("Save Feedback", type="primary", use_container_width=True)
 
         if feedback_submitted:
@@ -325,8 +321,8 @@ def story_learning_page() -> None:
                 session_id=st.session_state.get("active_session_id"),
                 recommendation_useful=recommendation_useful == "Yes",
                 lesson_understandable=lesson_understandable == "Yes",
-                story_help_learning=story_help_learning == "Yes",
                 rating=rating,
+                comment=comment,
             )
             st.session_state["feedback_saved"] = True
             st.rerun()
@@ -445,25 +441,6 @@ def teacher_review_page() -> None:
         )
 
 
-def about_page() -> None:
-    render_hero(
-        "About Project",
-        "This MVP connects a school library catalog with recommendations, lessons, teacher review, and simple evaluation.",
-        kicker="About",
-    )
-    st.markdown(
-        """
-        This project is an MVP for school library recommendation and story-based learning.
-
-        - It uses the school library catalog as the source of truth.
-        - Recommendation is currently rule-based.
-        - Story-based learning uses book Abstract data.
-        - OpenAI integration is optional and supported through environment variables.
-        - Teacher validation is recommended before classroom use.
-        """
-    )
-
-
 def main() -> None:
     setup_page()
     page = render_sidebar_navigation()
@@ -480,8 +457,6 @@ def main() -> None:
         dashboard_page()
     elif page == "Teacher Review":
         teacher_review_page()
-    else:
-        about_page()
 
 
 if __name__ == "__main__":

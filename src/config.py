@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import logging
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -12,6 +13,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = BASE_DIR / "database" / "library.db"
 TMP_DB_PATH = Path(tempfile.gettempdir()) / "library_recom.db"
 _DB_PATH_WARNING = ""
+logger = logging.getLogger(__name__)
 
 
 def _is_writable_database_path(path: Path) -> bool:
@@ -40,6 +42,7 @@ def get_database_path() -> Path:
                     f"Configured LIBRARY_DB_PATH '{configured_path}' is not writable. "
                     f"Using fallback database path '{candidate}'."
                 )
+                logger.warning(_DB_PATH_WARNING)
             else:
                 _DB_PATH_WARNING = ""
             return candidate

@@ -84,6 +84,7 @@ FEEDBACK_COLUMN_TYPES = {
     "lesson_understandable": "INTEGER NOT NULL",
     "story_help_learning": "INTEGER NOT NULL",
     "rating": "INTEGER NOT NULL",
+    "comment": "TEXT",
     "created_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
 }
 
@@ -205,6 +206,7 @@ def init_db(db_path: str | Path) -> None:
                 lesson_understandable INTEGER NOT NULL,
                 story_help_learning INTEGER NOT NULL,
                 rating INTEGER NOT NULL,
+                comment TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (session_id) REFERENCES recommendation_sessions(id)
             )
@@ -378,23 +380,24 @@ def save_feedback(
     session_id: int | None,
     recommendation_useful: bool,
     lesson_understandable: bool,
-    story_help_learning: bool,
     rating: int,
+    comment: str = "",
 ) -> int:
     init_db(db_path)
     with get_connection(db_path) as conn:
         cursor = conn.execute(
             """
             INSERT INTO feedback (
-                session_id, recommendation_useful, lesson_understandable, story_help_learning, rating
-            ) VALUES (?, ?, ?, ?, ?)
+                session_id, recommendation_useful, lesson_understandable, story_help_learning, rating, comment
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
                 int(bool(recommendation_useful)),
                 int(bool(lesson_understandable)),
-                int(bool(story_help_learning)),
+                int(bool(lesson_understandable)),
                 int(rating),
+                comment.strip(),
             ),
         )
         conn.commit()

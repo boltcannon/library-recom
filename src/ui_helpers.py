@@ -108,7 +108,6 @@ def render_sidebar_navigation() -> str:
             "Story-Based Learning",
             "Dashboard",
             "Teacher Review",
-            "About Project",
         ],
     )
     st.sidebar.markdown("---")
@@ -138,23 +137,8 @@ def render_recommendation_card(row: pd.Series) -> None:
 
         st.write(f"**Short summary:** {shorten_text(row.get('abstract', ''), max_words=60)}")
         st.success(explain_recommendation(row))
-
-        with st.expander("See why this book matched", expanded=False):
-            detail1, detail2 = st.columns(2)
-            detail1.write(f"**Pages:** {safe_int(row['pages']) or 'Unknown'}")
-            detail1.write(f"**Accession No:** {row['accession_no'] or 'Not specified'}")
-            detail1.write(f"**Score breakdown:** {row.get('recommendation_score_breakdown', 'Not available')}")
-            detail1.write(f"**Matched preferences:** {row.get('matched_preferences', 'general fit')}")
-            detail2.write(f"**Matched words:** {row.get('matched_keywords', 'No exact keyword match')}")
-            detail2.write(f"**Topic evidence:** {row.get('topic_match_details', 'No strong topic match')}")
-            detail2.write(f"**Book type fit:** {row.get('type_reason', 'No book-type preference was applied.')}")
-            st.write(f"**Length fit:** {row.get('length_reason', 'Length information is limited.')}")
-            st.write(f"**Abstract status:** {row.get('abstract_status', 'Unknown')}")
-            st.write(f"**Metadata quality:** {row.get('metadata_reason', 'Metadata details are limited.')}")
-            if "abstract is missing" in str(row.get("abstract_status", "")).lower():
-                st.warning(
-                    "This book can be recommended, but story-based lesson generation may be weak because abstract is missing."
-                )
+        if "abstract is missing" in str(row.get("abstract_status", "")).lower():
+            st.warning("This book can still be recommended, but the lesson may be weaker because the abstract is missing.")
 
 
 def render_book_snapshot(book: dict[str, Any], title: str = "Book details") -> None:

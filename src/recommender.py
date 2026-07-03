@@ -227,6 +227,24 @@ def build_recommendation_reason(
     return reason
 
 
+def build_simple_recommendation_reason(
+    matched_topics: list[str],
+    preferred_length: str,
+    preferred_type: str,
+) -> str:
+    parts: list[str] = []
+    if matched_topics:
+        parts.append(f"it matches your interest in {', '.join(matched_topics[:2])}")
+    if preferred_length != "any":
+        parts.append(f"it is a {preferred_length} book")
+    elif preferred_type != "any":
+        parts.append(f"it matches your preference for {preferred_type} books")
+
+    if not parts:
+        return "Recommended because it is a good overall match."
+    return "Recommended because " + " and ".join(parts) + "."
+
+
 def recommend_books(books_df: pd.DataFrame, preferences: dict[str, str], top_n: int = 5) -> pd.DataFrame:
     df = books_df.copy()
     if df.empty:
@@ -277,6 +295,11 @@ def recommend_books(books_df: pd.DataFrame, preferences: dict[str, str], top_n: 
                 length_reason,
                 abstract_reason,
             )
+        )
+        df.at[row_index, "simple_recommendation_reason"] = build_simple_recommendation_reason(
+            matched_topics,
+            preferred_length,
+            preferred_type,
         )
         df.at[row_index, "matched_preferences"] = ", ".join(matched_preferences) or "general fit"
         df.at[row_index, "matched_keywords"] = ", ".join(matched_terms) or "No exact keyword match"

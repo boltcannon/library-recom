@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 
 from src.chatbot_logic import collect_student_preferences
-from src.config import BASE_DIR, get_database_path
+from src.config import BASE_DIR, get_database_path, get_database_warning
 from src.database import (
     create_recommendation_session,
     fetch_all_books,
@@ -50,6 +50,7 @@ def setup_page() -> None:
     st.session_state.setdefault("latest_lesson", None)
     st.session_state.setdefault("active_session_id", None)
     st.session_state.setdefault("feedback_saved", False)
+    st.session_state.setdefault("db_path_warning", get_database_warning())
 
 
 def home_page() -> None:
@@ -82,6 +83,8 @@ def home_page() -> None:
         )
 
     render_status_tip("Suggested flow", "Start with Admin, move to Student, continue to Story-Based Learning, then use Teacher Review.")
+    if st.session_state.get("db_path_warning"):
+        st.warning(st.session_state["db_path_warning"])
 
 
 def admin_page() -> None:

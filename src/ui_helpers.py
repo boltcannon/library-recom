@@ -96,31 +96,44 @@ def render_status_tip(title: str, body: str) -> None:
     )
 
 
-def render_sidebar_navigation() -> str:
+def render_sidebar_navigation(active_role: str) -> str:
     st.sidebar.title("Library Guide")
-    st.sidebar.caption("Move step by step from upload to recommendation, lesson, and review.")
-    page = st.sidebar.radio(
-        "Open a page",
-        [
+    st.sidebar.caption("Move step by step through the parts of the app that match your role.")
+    selected_role = st.sidebar.radio(
+        "Choose your role",
+        ["Student", "Teacher", "Admin"],
+        key="active_role",
+        horizontal=False,
+    )
+    page_options = {
+        "Student": [
+            "Home",
+            "Student Dashboard",
+            "Find Books",
+            "Story-Based Learning",
+        ],
+        "Teacher": [
+            "Home",
+            "Teacher Review",
+            "Dashboard",
+        ],
+        "Admin": [
             "Home",
             "Admin: Upload Catalog",
-            "Student: Get Book Recommendation",
-            "Story-Based Learning",
             "Dashboard",
-            "Teacher Review",
         ],
+    }
+    page = st.sidebar.radio(
+        "Open a page",
+        page_options.get(selected_role, page_options["Student"]),
     )
     st.sidebar.markdown("---")
-    st.sidebar.markdown(
-        """
-        **Suggested flow**
-
-        1. Upload a catalog
-        2. Ask for book ideas
-        3. Build a lesson
-        4. Review and save
-        """
-    )
+    flow_text = {
+        "Student": "1. Set your profile\n2. Find books\n3. Build a lesson\n4. Take a quiz",
+        "Teacher": "1. Open a lesson\n2. Review content\n3. Save and export",
+        "Admin": "1. Upload a catalog\n2. Check activity\n3. Support teachers and students",
+    }
+    st.sidebar.markdown(f"**Suggested flow**\n\n{flow_text.get(selected_role, flow_text['Student'])}")
     return page
 
 

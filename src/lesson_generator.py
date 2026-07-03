@@ -357,6 +357,70 @@ def lesson_sections_to_text(sections: list[tuple[str, Any]]) -> str:
     return "\n\n".join(blocks)
 
 
+def _extract_reference_phrase(book: dict[str, Any]) -> str:
+    abstract = str(book.get("abstract", "")).strip()
+    if not abstract:
+        return str(book.get("title", "the book")).strip()
+    parts = re.split(r"[.!?]", abstract)
+    first = next((part.strip() for part in parts if part.strip()), abstract)
+    words = first.split()
+    return " ".join(words[:10]) if words else str(book.get("title", "the book")).strip()
+
+
+def generate_quiz_questions(book: dict[str, Any], concept: str, grade: str) -> list[dict[str, Any]]:
+    phrase = _extract_reference_phrase(book)
+    title = str(book.get("title", "this book")).strip() or "this book"
+    concept_text = concept or "the lesson idea"
+    grade_profile = get_grade_profile(grade)
+    return [
+        {
+            "question": f"What is this lesson mainly helping you learn from {title}?",
+            "options": [concept_text, "A random made-up story", "Nothing from the book"],
+            "answer": concept_text,
+            "feedback": f"The lesson is built to teach {concept_text} using the book title and abstract.",
+        },
+        {
+            "question": "Which source should we trust while learning from the story?",
+            "options": ["The title and abstract", "Guessed extra story details", "Any imaginary event we like"],
+            "answer": "The title and abstract",
+            "feedback": f"We only use supported details from {title}'s title and abstract.",
+        },
+        {
+            "question": f"Which detail best connects the lesson to the book?",
+            "options": [phrase, "A different story not in the book", "A movie scene we imagined"],
+            "answer": phrase,
+            "feedback": f"The best answer points back to a real detail from the abstract: {phrase}.",
+        },
+    ]
+
+
+def grade_quiz_answers(questions: list[dict[str, Any]], answers: list[str]) -> dict[str, Any]:
+    results: list[dict[str, Any]] = []
+    score = 0
+    for index, question in enumerate(questions):
+        selected = answers[index] if index < len(answers) else ""
+        correct = selected == question["answer"]
+        if correct:
+            score += 1
+        results.append(
+            {
+                "question": question["question"],
+                "selected_answer": selected,
+                "correct_answer": question["answer"],
+                "is_correct": correct,
+                "feedback": question["feedback"],
+            }
+        )
+    total = len(questions)
+    if score == total:
+        summary = "Great work. You understood the lesson very well."
+    elif score >= max(1, total - 1):
+        summary = "Nice work. You understood most of the lesson."
+    else:
+        summary = "Good try. Review the lesson once more and try again."
+    return {"score": score, "total_questions": total, "results": results, "summary": summary}
+
+
 def generate_openai_lesson(
     book: dict[str, Any],
     subject: str,

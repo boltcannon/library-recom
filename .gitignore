@@ -20,6 +20,8 @@ env/
 # Local databases and logs
 database/*.db
 database/*.sqlite
+tmp/*.db
+tmp/*.sqlite
 *.log
 
 # OS / editor

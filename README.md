@@ -13,7 +13,7 @@ This project is a Streamlit app that helps schools upload a library catalog, rec
 - Student recommendation flow based on grade, topic, type, length, and reading level
 - Cleaner Streamlit UI with guided sidebar flow, recommendation cards, and lesson review sections
 - Story-based lesson generation with optional OpenAI support
-- Teacher review mode with lesson editing, saving, and export
+- Admin lesson review with editing, saving, and export
 - Database logging for recommendation sessions, selected books, lessons, and feedback
 - Basic dashboard for uploads, sessions, popular books, and average rating
 - Safe fallback lesson template when no API key is available
@@ -242,7 +242,7 @@ For Render production, use PostgreSQL through `DATABASE_URL`. SQLite remains use
 - If `OPENAI_API_KEY` is set, the app uses OpenAI to generate the lesson.
 - If no API key is available, the app uses a stronger rule-based fallback template.
 - The app does not invent story details and warns when the connection between concept and abstract is weak.
-- Teachers can review the generated lesson, edit the final text, save it to the database, and export it as a `.txt` file.
+- Admins can review the generated lesson, edit the final text, save it to the database, and export it as a `.txt` file.
 
 ## Limitations
 
@@ -256,7 +256,7 @@ For Render production, use PostgreSQL through `DATABASE_URL`. SQLite remains use
 ## Future Improvements
 
 - Better ranking and personalization over time
-- Teacher accounts and lesson approval workflow
+- Richer student history and personalization
 - Student history and saved reading journeys
 - Borrowing and availability tracking
 - Stronger curriculum mapping by grade and subject

@@ -109,7 +109,7 @@ def inject_global_styles() -> None:
             justify-content: center;
             background: linear-gradient(135deg, #f6c86a 0%, #e98648 100%);
             color: white;
-            font-size: 1.2rem;
+            font-size: 1rem;
             font-weight: 800;
         }
 
@@ -346,10 +346,6 @@ def inject_global_styles() -> None:
             letter-spacing: 0.05em;
         }
 
-        .journey-step {
-            border-left: 4px solid var(--orange);
-        }
-
         .dashboard-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -405,7 +401,7 @@ def render_brand_header(role: str | None = None) -> None:
         f"""
         <div class="brand-shell">
             <div class="brand-mark">
-                <div class="brand-icon">📚</div>
+                <div class="brand-icon">SS</div>
                 <div>
                     <p class="brand-title">StoryShelf</p>
                     <p class="brand-subtitle">School library discovery and story-based learning</p>
@@ -461,7 +457,7 @@ def render_status_tip(title: str, body: str) -> None:
     )
 
 
-def render_empty_state(title: str, body: str, icon: str = "🌟") -> None:
+def render_empty_state(title: str, body: str, icon: str = "*") -> None:
     st.markdown(
         f"""
         <div class="empty-card">
@@ -496,9 +492,14 @@ def render_sidebar_navigation(role: str, user_name: str) -> str:
     current_page = st.session_state.get("nav_page", current_options[0])
     if current_page not in current_options:
         st.session_state["nav_page"] = current_options[0]
+
     sidebar_key = "sidebar_nav_page"
-    if st.session_state.get(sidebar_key) not in current_options or st.session_state.get(sidebar_key) != st.session_state["nav_page"]:
+    if (
+        st.session_state.get(sidebar_key) not in current_options
+        or st.session_state.get(sidebar_key) != st.session_state["nav_page"]
+    ):
         st.session_state[sidebar_key] = st.session_state["nav_page"]
+
     page = st.sidebar.radio(
         "Open a page",
         current_options,
@@ -508,8 +509,8 @@ def render_sidebar_navigation(role: str, user_name: str) -> str:
     st.session_state["nav_page"] = page
     st.sidebar.markdown("---")
     flow_text = {
-        "student": "Profile → Find a book → Build a lesson → Take the quiz",
-        "admin": "Dashboard → Review lessons → Manage users → Upload catalogs",
+        "student": "Profile -> Find a book -> Build a lesson -> Take the quiz",
+        "admin": "Dashboard -> Review lessons -> Manage users -> Upload catalogs",
     }
     st.sidebar.markdown(f"**Suggested flow**\n\n{flow_text.get(role, flow_text['student'])}")
     return page
@@ -547,7 +548,7 @@ def render_recommendation_card(row: pd.Series) -> None:
     length_type = str(row.get("length_type") or "any").title()
     reading_level = str(row.get("reading_level") or "Mixed").title()
     item_type = str(row.get("item_type") or "Book")
-    genre_text = str(row.get("genre_tags") or item_type or "General").replace(",", " · ")
+    genre_text = str(row.get("genre_tags") or item_type or "General").replace(",", " | ")
     summary = shorten_text(row.get("abstract", ""), max_words=52)
 
     st.markdown('<div class="rec-card">', unsafe_allow_html=True)
@@ -590,7 +591,6 @@ def render_recommendation_card(row: pd.Series) -> None:
     st.write(summary)
     with st.expander("Peek inside this book", expanded=False):
         st.write(f"**Abstract:** {shorten_text(row.get('abstract', ''), max_words=120)}")
-        st.write(f"**Matched topics:** {row.get('matched_preferences', 'general fit')}")
         if "abstract is missing" in str(row.get("abstract_status", "")).lower():
             st.warning("This book can still be recommended, but the lesson may be weaker because the abstract is missing.")
     st.markdown("</div>", unsafe_allow_html=True)

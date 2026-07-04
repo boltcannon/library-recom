@@ -184,7 +184,7 @@ Rules:
 - Keep the language {grade_profile["tone"]} for {grade_profile["label"]}.
 - If the concept fit is weak, say so honestly.
 - Make the lesson practical and safe for school students.
-- End with: Teacher may review this lesson before classroom use.
+- End with: An admin may review this lesson before classroom use.
 
 Book title: {book.get("title", "")}
 Book abstract: {book.get("abstract", "")}
@@ -353,7 +353,7 @@ def lesson_sections_to_text(sections: list[tuple[str, Any]]) -> str:
         else:
             body_text = str(body)
         blocks.append(f"{title}\n{body_text}".strip())
-    blocks.append("Teacher may review this lesson before classroom use.")
+    blocks.append("An admin may review this lesson before classroom use.")
     return "\n\n".join(blocks)
 
 

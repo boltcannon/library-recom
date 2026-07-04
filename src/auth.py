@@ -11,7 +11,7 @@ from passlib.context import CryptContext
 
 PASSWORD_CONTEXT = CryptContext(schemes=["bcrypt_sha256", "bcrypt"], deprecated="auto")
 EMAIL_PATTERN = re.compile(r"^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$", re.IGNORECASE)
-ALLOWED_ROLES = {"student", "teacher", "admin"}
+ALLOWED_ROLES = {"student", "admin"}
 MAX_PASSWORD_BYTES: Final[int] = 1024
 PBKDF2_ITERATIONS: Final[int] = 390000
 PBKDF2_SCHEME: Final[str] = "pbkdf2_sha256"
@@ -73,5 +73,5 @@ def verify_password(password: str, password_hash: str) -> bool:
 
     try:
         return PASSWORD_CONTEXT.verify(password, password_hash)
-    except ValueError:
+    except Exception:  # noqa: BLE001
         return False

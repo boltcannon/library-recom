@@ -601,6 +601,7 @@ def _migrate_legacy_reading_history(config: DatabaseConfig) -> None:
 def _upsert_student_profile_shadow(
     config: DatabaseConfig,
     user_id: int,
+    full_name: str,
     class_grade: str,
     preferred_language: str,
     favorite_topics: str,
@@ -615,6 +616,10 @@ def _upsert_student_profile_shadow(
         profile_values["user_id"] = user_id
     if "student_id" in existing_columns:
         profile_values["student_id"] = user_id
+    if "name" in existing_columns:
+        profile_values["name"] = full_name
+    if "full_name" in existing_columns:
+        profile_values["full_name"] = full_name
     if "class_grade" in existing_columns:
         profile_values["class_grade"] = class_grade
     if "grade" in existing_columns:
@@ -1207,6 +1212,7 @@ def save_student_profile_for_user(
     _upsert_student_profile_shadow(
         config,
         user_id,
+        full_name.strip(),
         class_grade.strip(),
         preferred_language.strip(),
         favorite_topics.strip(),
@@ -1555,7 +1561,7 @@ def save_student_profile(
             """,
             (clean_name, clean_grade, clean_language, clean_topics, clean_level, student_id),
         )
-        _upsert_student_profile_shadow(config, student_id, clean_grade, clean_language, clean_topics, clean_level)
+        _upsert_student_profile_shadow(config, student_id, clean_name, clean_grade, clean_language, clean_topics, clean_level)
         clear_data_caches()
         return student_id
 
@@ -1568,7 +1574,7 @@ def save_student_profile(
         """,
         (clean_name, clean_grade, clean_language, clean_topics, clean_level),
     )
-    _upsert_student_profile_shadow(config, new_student_id, clean_grade, clean_language, clean_topics, clean_level)
+    _upsert_student_profile_shadow(config, new_student_id, clean_name, clean_grade, clean_language, clean_topics, clean_level)
     clear_data_caches()
     return new_student_id
 

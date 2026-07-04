@@ -496,12 +496,16 @@ def render_sidebar_navigation(role: str, user_name: str) -> str:
     current_page = st.session_state.get("nav_page", current_options[0])
     if current_page not in current_options:
         st.session_state["nav_page"] = current_options[0]
+    sidebar_key = "sidebar_nav_page"
+    if st.session_state.get(sidebar_key) not in current_options or st.session_state.get(sidebar_key) != st.session_state["nav_page"]:
+        st.session_state[sidebar_key] = st.session_state["nav_page"]
     page = st.sidebar.radio(
         "Open a page",
         current_options,
-        key="nav_page",
+        key=sidebar_key,
         label_visibility="collapsed",
     )
+    st.session_state["nav_page"] = page
     st.sidebar.markdown("---")
     flow_text = {
         "student": "Profile → Find a book → Build a lesson → Take the quiz",

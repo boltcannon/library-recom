@@ -88,6 +88,7 @@ If the database is empty, the app still starts safely and shows clear guidance t
 - The first screen is now authentication, not role switching.
 - `Sign Up` creates a `student` account.
 - `Login` works for `student`, `teacher`, and `admin` accounts.
+- If no admin exists yet, the auth screen also shows `Create First Admin`.
 - The sidebar only shows pages that match the logged-in user's role.
 - Route access is checked in code as well, so changing `session_state` alone is not enough to unlock another role.
 
@@ -99,7 +100,12 @@ If the database is empty, the app still starts safely and shows clear guidance t
 
 ## First Admin Account Setup
 
-Set these environment variables before starting the app:
+You have two ways to create the first admin:
+
+1. From the UI:
+   If the app has no admin account yet, open the auth screen and use `Create First Admin`.
+2. From environment variables:
+   Set these before starting the app:
 
 ```env
 FIRST_ADMIN_NAME=School Admin
@@ -107,7 +113,7 @@ FIRST_ADMIN_EMAIL=admin@example.com
 FIRST_ADMIN_PASSWORD=StrongPass1
 ```
 
-On startup, the app will create or refresh that admin account securely.
+On startup, the app will create or refresh that admin account securely if those variables are present.
 
 After logging in as admin, open `Admin: User Management` to:
 

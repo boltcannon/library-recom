@@ -13,6 +13,7 @@ from src.database import (
     create_user,
     create_recommendation_session,
     ensure_admin_account,
+    fetch_admin_user_count,
     fetch_all_users,
     fetch_all_books,
     fetch_book_by_id,
@@ -166,22 +167,37 @@ def enforce_role(required_roles: set[str]) -> dict | None:
 
 
 def render_auth_page() -> None:
+    admin_exists = fetch_admin_user_count(DB_CONFIG) > 0
+    auth_options = ["Login", "Sign Up"]
+    if not admin_exists:
+        auth_options.append("Create First Admin")
+
     render_hero(
         "Welcome to the School Library App",
-        "Log in to continue, or create a student account to start discovering books and lessons.",
+        "Students can sign up, and students, teachers, and admins can all log in. If this is the first time setting up the app, create the first admin account here.",
         kicker="Authentication",
     )
     selected_view = st.radio(
         "Choose an option",
-        ["Login", "Sign Up"],
+        auth_options,
         horizontal=True,
-        index=0 if st.session_state.get("auth_view", "login") == "login" else 1,
+        index=max(0, auth_options.index(
+            "Create First Admin" if st.session_state.get("auth_view") == "admin_setup" and "Create First Admin" in auth_options
+            else "Sign Up" if st.session_state.get("auth_view") == "signup"
+            else "Login"
+        )),
     )
-    st.session_state["auth_view"] = "login" if selected_view == "Login" else "signup"
+    if selected_view == "Login":
+        st.session_state["auth_view"] = "login"
+    elif selected_view == "Create First Admin":
+        st.session_state["auth_view"] = "admin_setup"
+    else:
+        st.session_state["auth_view"] = "signup"
 
     if selected_view == "Login":
         with st.container(border=True):
             st.markdown("### Login")
+            st.caption("Use this for student, teacher, or admin accounts.")
             with st.form("login_form"):
                 email = st.text_input("Email")
                 password = st.text_input("Password", type="password")
@@ -195,9 +211,10 @@ def render_auth_page() -> None:
                     st.session_state["nav_page"] = default_page_for_role(str(user.get("role", "student")))
                     reset_student_learning_state()
                     st.rerun()
-    else:
+    elif selected_view == "Sign Up":
         with st.container(border=True):
             st.markdown("### Sign Up")
+            st.caption("This creates a student account.")
             with st.form("signup_form"):
                 full_name = st.text_input("Full name")
                 email = st.text_input("Email")
@@ -223,6 +240,39 @@ def render_auth_page() -> None:
                         st.session_state["nav_page"] = default_page_for_role("student")
                         reset_student_learning_state()
                         st.success("Your student account is ready.")
+                        st.rerun()
+    else:
+        with st.container(border=True):
+            st.markdown("### Create First Admin")
+            st.caption("Use this once to set up the admin who will upload catalogs and manage teacher accounts.")
+            with st.form("first_admin_form"):
+                full_name = st.text_input("Admin full name", value="School Admin")
+                email = st.text_input("Admin email")
+                password = st.text_input("Admin password", type="password")
+                confirm_password = st.text_input("Confirm admin password", type="password")
+                submitted = st.form_submit_button("Create Admin Account", type="primary", use_container_width=True)
+            if submitted:
+                if admin_exists:
+                    st.error("An admin account already exists. Please log in instead.")
+                elif not full_name.strip():
+                    st.error("Please enter the admin's full name.")
+                elif not is_valid_email(email):
+                    st.error("Please enter a valid email address.")
+                elif fetch_user_by_email(DB_CONFIG, email):
+                    st.error("An account with this email already exists.")
+                else:
+                    password_error = validate_password_rules(password)
+                    if password_error:
+                        st.error(password_error)
+                    elif password != confirm_password:
+                        st.error("Passwords do not match.")
+                    else:
+                        user_id = create_user(DB_CONFIG, full_name=full_name, email=email, password=password, role="admin")
+                        st.session_state["auth_user"] = fetch_user_by_id(DB_CONFIG, user_id)
+                        st.session_state["auth_view"] = "login"
+                        st.session_state["nav_page"] = default_page_for_role("admin")
+                        reset_student_learning_state()
+                        st.success("Your admin account is ready.")
                         st.rerun()
 
 

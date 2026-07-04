@@ -606,21 +606,71 @@ def _upsert_student_profile_shadow(
     favorite_topics: str,
     reading_level: str,
 ) -> None:
+    existing_columns = get_existing_columns(config, "student_profiles")
+    if not existing_columns:
+        return
+
+    profile_values: dict[str, Any] = {}
+    if "user_id" in existing_columns:
+        profile_values["user_id"] = user_id
+    if "student_id" in existing_columns:
+        profile_values["student_id"] = user_id
+    if "class_grade" in existing_columns:
+        profile_values["class_grade"] = class_grade
+    if "grade" in existing_columns:
+        profile_values["grade"] = class_grade
+    if "preferred_language" in existing_columns:
+        profile_values["preferred_language"] = preferred_language
+    if "favorite_topics" in existing_columns:
+        profile_values["favorite_topics"] = favorite_topics
+    if "reading_level" in existing_columns:
+        profile_values["reading_level"] = reading_level
+    if "reading_comfort_level" in existing_columns:
+        profile_values["reading_comfort_level"] = reading_level
+
+    lookup_column = "user_id" if "user_id" in existing_columns else "student_id" if "student_id" in existing_columns else None
+    if lookup_column is None:
+        return
+
+    existing_profile = fetch_one(
+        config,
+        f"SELECT id FROM student_profiles WHERE {lookup_column} = %s",
+        (user_id,),
+    )
+
+    if existing_profile:
+        set_clauses = [f"{column} = %s" for column in profile_values]
+        params = list(profile_values.values())
+        if "updated_at" in existing_columns:
+            set_clauses.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(int(existing_profile["id"]))
+        execute_query(
+            config,
+            f"""
+            UPDATE student_profiles
+            SET {", ".join(set_clauses)}
+            WHERE id = %s
+            """,
+            params,
+        )
+        return
+
+    insert_columns = list(profile_values.keys())
+    bound_values = list(profile_values.values())
+    value_placeholders = ["%s"] * len(bound_values)
+    if "created_at" in existing_columns:
+        insert_columns.append("created_at")
+        value_placeholders.append("CURRENT_TIMESTAMP")
+    if "updated_at" in existing_columns:
+        insert_columns.append("updated_at")
+        value_placeholders.append("CURRENT_TIMESTAMP")
     execute_query(
         config,
-        """
-        INSERT INTO student_profiles (
-            user_id, class_grade, preferred_language, favorite_topics, reading_level
-        )
-        VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT(user_id) DO UPDATE SET
-            class_grade = EXCLUDED.class_grade,
-            preferred_language = EXCLUDED.preferred_language,
-            favorite_topics = EXCLUDED.favorite_topics,
-            reading_level = EXCLUDED.reading_level,
-            updated_at = CURRENT_TIMESTAMP
+        f"""
+        INSERT INTO student_profiles ({", ".join(insert_columns)})
+        VALUES ({", ".join(value_placeholders)})
         """,
-        (user_id, class_grade, preferred_language, favorite_topics, reading_level),
+        bound_values,
     )
 
 
@@ -1004,6 +1054,13 @@ def fetch_all_users(config: DatabaseConfig) -> pd.DataFrame:
             """,
         )
     )
+
+
+@st.cache_data(show_spinner=False)
+def fetch_admin_user_count(config: DatabaseConfig) -> int:
+    init_db(config)
+    row = fetch_one(config, "SELECT COUNT(*) AS count FROM users WHERE role = %s", ("admin",))
+    return int(row["count"]) if row and row.get("count") is not None else 0
 
 
 def create_user(
@@ -1947,6 +2004,7 @@ def fetch_dashboard_metrics(config: DatabaseConfig) -> dict[str, Any]:
 
 def clear_data_caches() -> None:
     fetch_all_users.clear()
+    fetch_admin_user_count.clear()
     fetch_user_by_email.clear()
     fetch_user_by_id.clear()
     fetch_student_profile_for_user.clear()

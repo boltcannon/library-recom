@@ -4,6 +4,8 @@ This project is a Streamlit app that helps schools upload a library catalog, rec
 
 ## Features
 
+- Login, signup, logout, and role-based access control
+- Roles for `student`, `teacher`, and `admin`
 - Admin upload flow for Excel-based library catalogs
 - PostgreSQL-ready storage for production, with SQLite fallback for local development
 - Rule-based enrichment for length, reading level, genre, and subject tags
@@ -60,11 +62,15 @@ Example `.env`:
 OPENAI_API_KEY=your_api_key_here
 DATABASE_URL=
 LIBRARY_DB_PATH=database/library.db
+FIRST_ADMIN_NAME=
+FIRST_ADMIN_EMAIL=
+FIRST_ADMIN_PASSWORD=
 ```
 
 - `OPENAI_API_KEY` is optional. If it is missing, the app safely uses the fallback lesson generator.
 - `DATABASE_URL` is optional for local development, but it should be set in production.
 - `LIBRARY_DB_PATH` is only used for local SQLite fallback when `DATABASE_URL` is not set.
+- `FIRST_ADMIN_*` is optional, but it is the easiest way to create the first admin account.
 
 ## How to Run
 
@@ -75,6 +81,34 @@ streamlit run app.py
 If `DATABASE_URL` is set, the app uses PostgreSQL. If it is not set, the app falls back to a local SQLite database and creates the tables automatically if needed.
 
 If the database is empty, the app still starts safely and shows clear guidance to upload a catalog first.
+
+## Authentication And Roles
+
+- The first screen is now authentication, not role switching.
+- `Sign Up` creates a `student` account.
+- `Login` works for `student`, `teacher`, and `admin` accounts.
+- The sidebar only shows pages that match the logged-in user's role.
+- Route access is checked in code as well, so changing `session_state` alone is not enough to unlock another role.
+
+### Role access
+
+- `student`: Student Dashboard, Find Books, Story-Based Learning
+- `teacher`: Teacher Dashboard, Teacher Review
+- `admin`: Admin Dashboard, Admin Upload Catalog
+
+## First Admin Account Setup
+
+Set these environment variables before starting the app:
+
+```env
+FIRST_ADMIN_NAME=School Admin
+FIRST_ADMIN_EMAIL=admin@example.com
+FIRST_ADMIN_PASSWORD=StrongPass1
+```
+
+On startup, the app will create or refresh that admin account securely.
+
+If you need a teacher account, create a user record and set its `role` to `teacher` in the database, or promote an existing account directly in PostgreSQL/SQLite.
 
 ## How to Upload Catalog
 
@@ -120,7 +154,14 @@ The app also stores lightweight evaluation data in the database:
 - `recommendation_sessions`
 - `selected_books`
 - `generated_lessons`
-- `feedback`
+- `user_feedback`
+
+It also uses these auth and user tables:
+
+- `users`
+- `student_profiles`
+- `saved_books`
+- `reading_history`
 
 It logs student grade, preferences, recommended books, selected books, chosen subject, chosen concept, generated lesson text, and simple feedback responses.
 
@@ -188,7 +229,7 @@ For Render production, use PostgreSQL through `DATABASE_URL`. SQLite remains use
 - If `OPENAI_API_KEY` is set, the app uses OpenAI to generate the lesson.
 - If no API key is available, the app uses a stronger rule-based fallback template.
 - The app does not invent story details and warns when the connection between concept and abstract is weak.
-- Teachers can review the generated lesson, edit the final text, save it to SQLite, and export it as a `.txt` file.
+- Teachers can review the generated lesson, edit the final text, save it to the database, and export it as a `.txt` file.
 
 ## Limitations
 

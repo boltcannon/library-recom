@@ -1,29 +1,36 @@
 from __future__ import annotations
 
+import os
+
 import pandas as pd
 import streamlit as st
 
+from src.auth import ALLOWED_ROLES, is_valid_email, validate_password_rules
 from src.chatbot_logic import collect_student_preferences
 from src.config import get_database_config
 from src.database import (
+    authenticate_user,
+    create_user,
     create_recommendation_session,
+    ensure_admin_account,
     fetch_all_books,
     fetch_book_by_id,
     fetch_dashboard_metrics,
     fetch_latest_reviewed_lesson,
-    fetch_student_book_statuses,
-    fetch_student_dashboard_data,
-    fetch_student_profile,
-    fetch_students,
+    fetch_saved_book_statuses_for_user,
+    fetch_student_dashboard_data_for_user,
+    fetch_student_profile_for_user,
+    fetch_user_by_email,
+    fetch_user_by_id,
     init_db,
     log_catalog_upload,
     log_generated_lesson,
     log_selected_book,
-    save_feedback,
     save_quiz_result,
     save_reviewed_lesson,
-    save_student_profile,
-    update_student_book_status,
+    save_student_profile_for_user,
+    save_user_feedback,
+    update_saved_book_status_for_user,
 )
 from src.ingest_catalog import ingest_catalog
 from src.lesson_generator import (
@@ -51,6 +58,15 @@ LANGUAGE_OPTIONS = ["English", "Hindi", "Bilingual", "Other"]
 READING_LEVEL_OPTIONS = ["easy", "medium", "challenging"]
 
 
+@st.cache_data(show_spinner=False)
+def get_recommendations_cached(
+    books_df: pd.DataFrame,
+    preference_items: tuple[tuple[str, str], ...],
+    top_n: int = 5,
+) -> pd.DataFrame:
+    return recommend_books(books_df, dict(preference_items), top_n=top_n)
+
+
 def setup_page() -> None:
     st.set_page_config(
         page_title="School Library Recommendation Bot",
@@ -59,16 +75,25 @@ def setup_page() -> None:
     )
     inject_global_styles()
     init_db(DB_CONFIG)
-    st.session_state.setdefault("active_role", "Student")
+    admin_email = os.getenv("FIRST_ADMIN_EMAIL", "").strip()
+    admin_password = os.getenv("FIRST_ADMIN_PASSWORD", "").strip()
+    admin_name = os.getenv("FIRST_ADMIN_NAME", "").strip() or "Admin"
+    if admin_email and admin_password:
+        ensure_admin_account(DB_CONFIG, full_name=admin_name, email=admin_email, password=admin_password)
+
+    st.session_state.setdefault("auth_user", None)
     st.session_state.setdefault("recommended_books", [])
     st.session_state.setdefault("selected_book_id", None)
     st.session_state.setdefault("student_profile", {})
-    st.session_state.setdefault("active_student_id", None)
     st.session_state.setdefault("latest_lesson", None)
     st.session_state.setdefault("active_session_id", None)
     st.session_state.setdefault("feedback_saved", False)
     st.session_state.setdefault("last_quiz_result", None)
     st.session_state.setdefault("quiz_saved", False)
+    st.session_state.setdefault("student_profile_record", None)
+    st.session_state.setdefault("last_recommendation_signature", None)
+    st.session_state.setdefault("auth_view", "login")
+    st.session_state.setdefault("nav_page", "Home")
 
 
 def reset_student_learning_state() -> None:
@@ -79,61 +104,170 @@ def reset_student_learning_state() -> None:
     st.session_state["feedback_saved"] = False
     st.session_state["last_quiz_result"] = None
     st.session_state["quiz_saved"] = False
+    st.session_state["last_recommendation_signature"] = None
+
+
+def build_book_lookup(books_df: pd.DataFrame) -> dict[int, dict]:
+    if books_df.empty:
+        return {}
+    return {
+        int(row["id"]): row.to_dict()
+        for _, row in books_df.iterrows()
+    }
+
+
+def get_current_user() -> dict | None:
+    auth_user = st.session_state.get("auth_user")
+    if not auth_user or not auth_user.get("id"):
+        return None
+    fresh_user = fetch_user_by_id(DB_CONFIG, int(auth_user["id"]))
+    if fresh_user:
+        st.session_state["auth_user"] = fresh_user
+    return fresh_user or auth_user
+
+
+def is_authenticated() -> bool:
+    return get_current_user() is not None
+
+
+def default_page_for_role(role: str) -> str:
+    role = role.lower()
+    if role == "teacher":
+        return "Teacher Dashboard"
+    if role == "admin":
+        return "Admin Dashboard"
+    return "Student Dashboard"
+
+
+def logout_user() -> None:
+    auth_view = st.session_state.get("auth_view", "login")
+    st.session_state.clear()
+    setup_page()
+    st.session_state["auth_user"] = None
+    st.session_state["auth_view"] = auth_view
+    st.session_state["nav_page"] = "Home"
+
+
+def enforce_role(required_roles: set[str]) -> dict | None:
+    user = get_current_user()
+    if not user:
+        st.warning("Please log in to continue.")
+        st.session_state["auth_view"] = "login"
+        return None
+    role = str(user.get("role", "")).lower()
+    if role not in required_roles:
+        st.error("You do not have access to this section.")
+        st.session_state["nav_page"] = default_page_for_role(role)
+        return None
+    return user
+
+
+def render_auth_page() -> None:
+    render_hero(
+        "Welcome to the School Library App",
+        "Log in to continue, or create a student account to start discovering books and lessons.",
+        kicker="Authentication",
+    )
+    selected_view = st.radio(
+        "Choose an option",
+        ["Login", "Sign Up"],
+        horizontal=True,
+        index=0 if st.session_state.get("auth_view", "login") == "login" else 1,
+    )
+    st.session_state["auth_view"] = "login" if selected_view == "Login" else "signup"
+
+    if selected_view == "Login":
+        with st.container(border=True):
+            st.markdown("### Login")
+            with st.form("login_form"):
+                email = st.text_input("Email")
+                password = st.text_input("Password", type="password")
+                submitted = st.form_submit_button("Log In", type="primary", use_container_width=True)
+            if submitted:
+                user = authenticate_user(DB_CONFIG, email=email, password=password)
+                if not user:
+                    st.error("Invalid email or password.")
+                else:
+                    st.session_state["auth_user"] = user
+                    st.session_state["nav_page"] = default_page_for_role(str(user.get("role", "student")))
+                    reset_student_learning_state()
+                    st.rerun()
+    else:
+        with st.container(border=True):
+            st.markdown("### Sign Up")
+            with st.form("signup_form"):
+                full_name = st.text_input("Full name")
+                email = st.text_input("Email")
+                password = st.text_input("Password", type="password")
+                confirm_password = st.text_input("Confirm password", type="password")
+                submitted = st.form_submit_button("Create Student Account", type="primary", use_container_width=True)
+            if submitted:
+                if not full_name.strip():
+                    st.error("Please enter your full name.")
+                elif not is_valid_email(email):
+                    st.error("Please enter a valid email address.")
+                elif fetch_user_by_email(DB_CONFIG, email):
+                    st.error("An account with this email already exists.")
+                else:
+                    password_error = validate_password_rules(password)
+                    if password_error:
+                        st.error(password_error)
+                    elif password != confirm_password:
+                        st.error("Passwords do not match.")
+                    else:
+                        user_id = create_user(DB_CONFIG, full_name=full_name, email=email, password=password, role="student")
+                        st.session_state["auth_user"] = fetch_user_by_id(DB_CONFIG, user_id)
+                        st.session_state["nav_page"] = default_page_for_role("student")
+                        reset_student_learning_state()
+                        st.success("Your student account is ready.")
+                        st.rerun()
+
+
+def get_cached_student_profile() -> dict | None:
+    user = get_current_user()
+    cached_profile = st.session_state.get("student_profile_record")
+    if user and cached_profile and int(cached_profile.get("user_id", -1)) == int(user["id"]):
+        return cached_profile
+    return None
 
 
 def require_student_profile() -> dict | None:
-    student_id = st.session_state.get("active_student_id")
-    if not student_id:
-        st.info("Please create or select a student profile first from the Student Dashboard.")
+    user = enforce_role({"student"})
+    if not user:
         return None
-
-    profile = fetch_student_profile(DB_CONFIG, int(student_id))
+    cached_profile = get_cached_student_profile()
+    if cached_profile:
+        return {**cached_profile, "id": int(user["id"]), "full_name": user.get("full_name", "")}
+    profile = fetch_student_profile_for_user(DB_CONFIG, int(user["id"]))
     if not profile:
-        st.warning("The selected student profile could not be found. Please choose or create it again.")
-        st.session_state["active_student_id"] = None
+        st.info("Please complete your student profile first from the Student Dashboard.")
         return None
-
+    st.session_state["student_profile_record"] = profile
     st.session_state["student_profile"] = {
-        "name": profile["name"],
-        "grade": profile["grade"],
+        "name": user.get("full_name", ""),
+        "grade": profile["class_grade"],
         "preferred_language": profile.get("preferred_language", ""),
         "favorite_topics": profile.get("favorite_topics", ""),
-        "reading_level": profile.get("reading_comfort_level", ""),
+        "reading_level": profile.get("reading_level", ""),
     }
-    return profile
+    return {**profile, "id": int(user["id"]), "full_name": user.get("full_name", "")}
 
 
 def render_student_profile_manager() -> None:
-    students_df = fetch_students(DB_CONFIG)
-    current_student_id = st.session_state.get("active_student_id")
+    user = enforce_role({"student"})
+    if not user:
+        return
+    profile = fetch_student_profile_for_user(DB_CONFIG, int(user["id"]))
+    current_profile = {
+        "name": user.get("full_name", ""),
+        "grade": profile.get("class_grade", "4") if profile else "4",
+        "preferred_language": profile.get("preferred_language", "English") if profile else "English",
+        "favorite_topics": profile.get("favorite_topics", "") if profile else "",
+        "reading_level": profile.get("reading_level", "easy") if profile else "easy",
+    }
 
     with st.container(border=True):
         st.markdown("### Student Profile")
-        if students_df.empty:
-            render_status_tip("No profiles yet", "Create a student profile to save books, lessons, and reading history.")
-        else:
-            options = [None] + students_df["id"].tolist()
-            selected_existing = st.selectbox(
-                "Choose an existing student",
-                options=options,
-                index=options.index(current_student_id) if current_student_id in options else 0,
-                format_func=lambda value: "Create a new student" if value is None else f"{students_df.loc[students_df['id'] == value, 'name'].iloc[0]} (Class {students_df.loc[students_df['id'] == value, 'grade'].iloc[0]})",
-            )
-            if selected_existing != current_student_id:
-                st.session_state["active_student_id"] = selected_existing
-                if selected_existing:
-                    profile = fetch_student_profile(DB_CONFIG, int(selected_existing))
-                    if profile:
-                        st.session_state["student_profile"] = {
-                            "name": profile["name"],
-                            "grade": profile["grade"],
-                            "preferred_language": profile.get("preferred_language", ""),
-                            "favorite_topics": profile.get("favorite_topics", ""),
-                            "reading_level": profile.get("reading_comfort_level", ""),
-                        }
-                reset_student_learning_state()
-
-        current_profile = st.session_state.get("student_profile", {})
         with st.form("student_profile_form"):
             name = st.text_input("Student name", value=current_profile.get("name", ""))
             grade = st.selectbox(
@@ -151,7 +285,7 @@ def render_student_profile_manager() -> None:
                 value=current_profile.get("favorite_topics", ""),
                 placeholder="animals, science, friendship, space",
             )
-            reading_comfort_level = st.selectbox(
+            reading_level = st.selectbox(
                 "Reading comfort level",
                 READING_LEVEL_OPTIONS,
                 index=READING_LEVEL_OPTIONS.index(current_profile.get("reading_level", "easy")) if current_profile.get("reading_level", "easy") in READING_LEVEL_OPTIONS else 0,
@@ -162,22 +296,29 @@ def render_student_profile_manager() -> None:
             if not name.strip():
                 st.error("Please enter the student's name.")
             else:
-                student_id = save_student_profile(
+                save_student_profile_for_user(
                     DB_CONFIG,
-                    name=name,
-                    grade=grade,
+                    user_id=int(user["id"]),
+                    full_name=name,
+                    class_grade=grade,
                     preferred_language=preferred_language,
                     favorite_topics=favorite_topics,
-                    reading_comfort_level=reading_comfort_level,
-                    student_id=st.session_state.get("active_student_id"),
+                    reading_level=reading_level,
                 )
-                st.session_state["active_student_id"] = student_id
+                st.session_state["auth_user"] = {**user, "full_name": name.strip()}
+                st.session_state["student_profile_record"] = {
+                    "user_id": int(user["id"]),
+                    "class_grade": grade,
+                    "preferred_language": preferred_language,
+                    "favorite_topics": favorite_topics.strip(),
+                    "reading_level": reading_level,
+                }
                 st.session_state["student_profile"] = {
                     "name": name.strip(),
                     "grade": grade,
                     "preferred_language": preferred_language,
                     "favorite_topics": favorite_topics.strip(),
-                    "reading_level": reading_comfort_level,
+                    "reading_level": reading_level,
                 }
                 reset_student_learning_state()
                 st.success("Student profile saved.")
@@ -190,13 +331,14 @@ def home_page() -> None:
         kicker="Welcome",
     )
 
-    role = st.session_state.get("active_role", "Student")
+    user = get_current_user()
+    role = str(user.get("role", "student")).lower() if user else "student"
     role_text = {
-        "Student": "Create or choose your profile, find books, save favorites, read lessons, and take quizzes.",
-        "Teacher": "Review lessons, improve classroom wording, and save teacher-ready versions.",
-        "Admin": "Upload the catalog and monitor the activity dashboard.",
+        "student": "Complete your profile, find books, save favorites, read lessons, and take quizzes.",
+        "teacher": "Review lessons, improve classroom wording, and save teacher-ready versions.",
+        "admin": "Upload the catalog and monitor the activity dashboard.",
     }
-    render_status_tip("Current role", role_text.get(role, role_text["Student"]))
+    render_status_tip("Current role", role_text.get(role, role_text["student"]))
 
     col1, col2 = st.columns(2)
     with col1:
@@ -222,6 +364,8 @@ def home_page() -> None:
 
 
 def admin_page() -> None:
+    if not enforce_role({"admin"}):
+        return
     render_hero(
         "Admin: Upload Catalog",
         "Upload the school library Excel file and safely store it in the app database.",
@@ -252,6 +396,9 @@ def admin_page() -> None:
 
 
 def student_dashboard_page() -> None:
+    user = enforce_role({"student"})
+    if not user:
+        return
     render_hero(
         "Student Dashboard",
         "Manage the student profile, see reading progress, and look back at saved books, lessons, and activity.",
@@ -262,7 +409,7 @@ def student_dashboard_page() -> None:
     if not profile:
         return
 
-    dashboard = fetch_student_dashboard_data(DB_CONFIG, int(profile["id"]))
+    dashboard = fetch_student_dashboard_data_for_user(DB_CONFIG, int(user["id"]))
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Books explored", dashboard["total_books_explored"])
     c2.metric("Saved books", dashboard["total_books_saved"])
@@ -299,12 +446,16 @@ def student_dashboard_page() -> None:
 
 
 def student_page() -> None:
+    user = enforce_role({"student"})
+    if not user:
+        return
     render_hero(
         "Find Books",
         "Chat with the library bot by answering a few questions about what you like to read.",
         kicker="Student journey",
     )
     books_df = fetch_all_books(DB_CONFIG)
+    book_lookup = build_book_lookup(books_df)
     if books_df.empty:
         st.warning("No books are available yet. Please ask the admin to upload a library catalog first.")
         return
@@ -314,7 +465,7 @@ def student_page() -> None:
         return
 
     render_chat_bubble(
-        f"Hi {profile['name']}! I can help you find a book from your school library. Let's use your profile and a few reading preferences."
+        f"Hi {profile['full_name']}! I can help you find a book from your school library. Let's use your profile and a few reading preferences."
     )
     with st.container(border=True):
         st.markdown("### Step 1: Tell the Bot What You Want Today")
@@ -323,38 +474,53 @@ def student_page() -> None:
                 st.caption(f"Preferred language: {profile['preferred_language']}")
             preferences = collect_student_preferences(
                 include_grade=False,
-                default_grade=profile["grade"],
+                default_grade=profile["class_grade"],
                 default_topics=profile.get("favorite_topics", ""),
-                default_reading_level=profile.get("reading_comfort_level", "easy") or "easy",
+                default_reading_level=profile.get("reading_level", "easy") or "easy",
             )
-            preferences["grade"] = profile["grade"]
+            preferences["grade"] = profile["class_grade"]
             submitted = st.form_submit_button("Find Books", type="primary", use_container_width=True)
 
     if submitted:
-        recommendations = recommend_books(books_df, preferences, top_n=5)
-        recommendation_records = recommendations.to_dict(orient="records")
-        st.session_state["recommended_books"] = recommendation_records
+        recommendation_signature = (
+            int(user["id"]),
+            tuple(sorted((str(key), str(value)) for key, value in preferences.items())),
+        )
+        if (
+            st.session_state.get("last_recommendation_signature") == recommendation_signature
+            and st.session_state.get("recommended_books")
+        ):
+            recommendation_records = st.session_state["recommended_books"]
+        else:
+            recommendations = get_recommendations_cached(
+                books_df,
+                tuple(sorted((str(key), str(value)) for key, value in preferences.items())),
+                top_n=5,
+            )
+            recommendation_records = recommendations.to_dict(orient="records")
+            st.session_state["recommended_books"] = recommendation_records
+            st.session_state["last_recommendation_signature"] = recommendation_signature
+            st.session_state["active_session_id"] = create_recommendation_session(
+                DB_CONFIG,
+                student_id=int(user["id"]),
+                grade=preferences.get("grade", ""),
+                preferences=preferences,
+                recommended_books=recommendation_records,
+            )
         st.session_state["student_profile"] = {
-            "name": profile["name"],
-            "grade": profile["grade"],
+            "name": profile["full_name"],
+            "grade": profile["class_grade"],
             "preferred_language": profile.get("preferred_language", ""),
             "favorite_topics": profile.get("favorite_topics", ""),
-            "reading_level": profile.get("reading_comfort_level", ""),
+            "reading_level": profile.get("reading_level", ""),
         }
-        st.session_state["active_session_id"] = create_recommendation_session(
-            DB_CONFIG,
-            student_id=int(profile["id"]),
-            grade=preferences.get("grade", ""),
-            preferences=preferences,
-            recommended_books=recommendation_records,
-        )
         st.session_state["latest_lesson"] = None
         st.session_state["feedback_saved"] = False
         st.session_state["selected_book_id"] = None
         st.session_state["last_quiz_result"] = None
         st.session_state["quiz_saved"] = False
 
-        if recommendations.empty:
+        if not recommendation_records:
             st.warning("I could not find a strong match yet. Try broader choices like Any, or leave topics blank.")
         else:
             render_chat_bubble("I found some books that may suit you. You can save them, mark them as read later, or continue to a lesson.")
@@ -364,7 +530,7 @@ def student_page() -> None:
         render_status_tip("What happens next?", "After you answer the questions, the app will show 3 to 5 book recommendations.")
         return
 
-    student_book_statuses = fetch_student_book_statuses(DB_CONFIG, int(profile["id"]))
+    student_book_statuses = fetch_saved_book_statuses_for_user(DB_CONFIG, int(user["id"]))
     st.markdown("### Step 2: Explore Your Book Cards")
     recommendation_df = pd.DataFrame(recommended_books)
     for _, row in recommendation_df.iterrows():
@@ -376,9 +542,9 @@ def student_page() -> None:
         read_label = "Marked as read" if status.get("marked_as_read") else "Mark as read"
         with col1:
             if st.button(saved_label, key=f"save_book_{book_id}", use_container_width=True):
-                update_student_book_status(
+                update_saved_book_status_for_user(
                     DB_CONFIG,
-                    int(profile["id"]),
+                    int(user["id"]),
                     book_id,
                     saved_for_later=not bool(status.get("saved_for_later")),
                     marked_as_read=bool(status.get("marked_as_read")),
@@ -386,9 +552,9 @@ def student_page() -> None:
                 st.rerun()
         with col2:
             if st.button(read_label, key=f"read_book_{book_id}", use_container_width=True):
-                update_student_book_status(
+                update_saved_book_status_for_user(
                     DB_CONFIG,
-                    int(profile["id"]),
+                    int(user["id"]),
                     book_id,
                     saved_for_later=bool(status.get("saved_for_later")),
                     marked_as_read=not bool(status.get("marked_as_read")),
@@ -408,12 +574,16 @@ def student_page() -> None:
 
 
 def story_learning_page() -> None:
+    user = enforce_role({"student"})
+    if not user:
+        return
     render_hero(
         "Story-Based Learning",
         "Use a selected book to build a simple lesson connected to a school subject, then try a short quiz.",
         kicker="Lesson builder",
     )
     books_df = fetch_all_books(DB_CONFIG)
+    book_lookup = build_book_lookup(books_df)
     if books_df.empty:
         st.warning("No books are available yet. Please upload a catalog first.")
         return
@@ -424,7 +594,7 @@ def story_learning_page() -> None:
 
     recommended_books = [
         book for book in st.session_state.get("recommended_books", [])
-        if fetch_book_by_id(DB_CONFIG, book.get("id"))
+        if int(book.get("id", -1)) in book_lookup
     ]
     default_book_id = st.session_state.get("selected_book_id")
     recommended_ids = [book["id"] for book in recommended_books]
@@ -444,11 +614,11 @@ def story_learning_page() -> None:
             "Choose a book",
             options=selectable_ids,
             index=selectable_ids.index(default_book_id) if default_book_id in selectable_ids else 0,
-            format_func=lambda value: book_label(fetch_book_by_id(DB_CONFIG, value)),
+            format_func=lambda value: book_label(book_lookup.get(value, {})),
         )
     st.session_state["selected_book_id"] = selected_book_id
 
-    book = fetch_book_by_id(DB_CONFIG, selected_book_id)
+    book = book_lookup.get(selected_book_id) or fetch_book_by_id(DB_CONFIG, selected_book_id)
     if not book:
         st.error("The selected book could not be loaded.")
         return
@@ -456,7 +626,7 @@ def story_learning_page() -> None:
     with right_col:
         render_book_snapshot(book, "Selected book")
 
-    render_chat_bubble(f"Nice choice, {profile['name']}. Pick a subject and concept, and then try the quiz after the lesson.")
+    render_chat_bubble(f"Nice choice, {profile['full_name']}. Pick a subject and concept, and then try the quiz after the lesson.")
     with st.container(border=True):
         st.markdown("### Build the Lesson")
         subject = st.selectbox("Which subject do you want to learn?", ["Math", "Science", "English", "Social Science", "Values"])
@@ -476,8 +646,8 @@ def story_learning_page() -> None:
                 fallback_preferences = st.session_state.get("student_profile", {})
                 session_id = create_recommendation_session(
                     DB_CONFIG,
-                    student_id=int(profile["id"]),
-                    grade=fallback_preferences.get("grade", profile["grade"]),
+                    student_id=int(user["id"]),
+                    grade=fallback_preferences.get("grade", profile["class_grade"]),
                     preferences=fallback_preferences,
                     recommended_books=recommended_books,
                 )
@@ -487,28 +657,28 @@ def story_learning_page() -> None:
                 book=book,
                 subject=subject,
                 concept=selected_concept,
-                grade=profile["grade"],
+                grade=profile["class_grade"],
             )
 
         lesson_text = lesson_sections_to_text(lesson["sections"])
-        log_selected_book(DB_CONFIG, session_id, selected_book_id, student_id=int(profile["id"]))
+        log_selected_book(DB_CONFIG, session_id, selected_book_id, student_id=int(user["id"]))
         lesson_log_id = log_generated_lesson(
             DB_CONFIG,
-            student_id=int(profile["id"]),
+            student_id=int(user["id"]),
             session_id=session_id,
             book_id=selected_book_id,
-            grade=profile["grade"],
+            grade=profile["class_grade"],
             subject=subject,
             concept=lesson.get("chosen_concept", selected_concept),
             generated_lesson=lesson_text,
         )
-        quiz_questions = generate_quiz_questions(book, lesson.get("chosen_concept", selected_concept), profile["grade"])
+        quiz_questions = generate_quiz_questions(book, lesson.get("chosen_concept", selected_concept), profile["class_grade"])
         st.session_state["latest_lesson"] = {
             "book_id": selected_book_id,
             "subject": subject,
             "concept": lesson.get("chosen_concept", selected_concept),
             "requested_concept": selected_concept,
-            "grade": profile["grade"],
+            "grade": profile["class_grade"],
             "generated_lesson": lesson_text,
             "warning": lesson["warning"],
             "sections": lesson["sections"],
@@ -565,7 +735,7 @@ def story_learning_page() -> None:
                 if not st.session_state.get("quiz_saved"):
                     save_quiz_result(
                         DB_CONFIG,
-                        student_id=int(profile["id"]),
+                        student_id=int(user["id"]),
                         book_id=selected_book_id,
                         lesson_log_id=latest_lesson.get("lesson_log_id"),
                         score=quiz_result["score"],
@@ -598,10 +768,10 @@ def story_learning_page() -> None:
                 feedback_submitted = st.form_submit_button("Save Feedback", type="primary", use_container_width=True)
 
         if feedback_submitted:
-            save_feedback(
+            save_user_feedback(
                 DB_CONFIG,
-                student_id=int(profile["id"]),
-                session_id=st.session_state.get("active_session_id"),
+                user_id=int(user["id"]),
+                lesson_id=latest_lesson.get("lesson_log_id"),
                 recommendation_useful=recommendation_useful == "Yes",
                 lesson_understandable=lesson_understandable == "Yes",
                 rating=rating,
@@ -611,11 +781,41 @@ def story_learning_page() -> None:
             st.rerun()
 
 
-def dashboard_page() -> None:
+def teacher_dashboard_page() -> None:
+    if not enforce_role({"teacher"}):
+        return
     render_hero(
-        "Dashboard",
-        "See quick project activity, library size, recommendation sessions, popular books, and feedback.",
-        kicker="Project view",
+        "Teacher Dashboard",
+        "See quick activity, library size, recommendation sessions, popular books, and feedback.",
+        kicker="Teacher space",
+    )
+
+    metrics = fetch_dashboard_metrics(DB_CONFIG)
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Uploads", metrics["total_uploads"])
+    col2.metric("Total Books", metrics["total_books"])
+    col3.metric("Recommendation Sessions", metrics["total_recommendation_sessions"])
+    col4.metric(
+        "Average Feedback Rating",
+        f"{metrics['average_feedback_rating']:.2f}" if metrics["average_feedback_rating"] is not None else "No feedback yet",
+    )
+
+    st.markdown("### Most Selected Books")
+    most_selected_books = metrics["most_selected_books"]
+    if most_selected_books.empty:
+        st.info("No book selections have been logged yet.")
+    else:
+        with st.container(border=True):
+            st.dataframe(most_selected_books, use_container_width=True, hide_index=True)
+
+
+def admin_dashboard_page() -> None:
+    if not enforce_role({"admin"}):
+        return
+    render_hero(
+        "Admin Dashboard",
+        "See library activity, recommendation sessions, catalog status, and feedback trends.",
+        kicker="Admin space",
     )
 
     metrics = fetch_dashboard_metrics(DB_CONFIG)
@@ -638,6 +838,8 @@ def dashboard_page() -> None:
 
 
 def teacher_review_page() -> None:
+    if not enforce_role({"teacher"}):
+        return
     render_hero(
         "Teacher Review",
         "Review the generated lesson, edit the final wording, save it, and export it for classroom use.",
@@ -645,6 +847,7 @@ def teacher_review_page() -> None:
     )
 
     books_df = fetch_all_books(DB_CONFIG)
+    book_lookup = build_book_lookup(books_df)
     if books_df.empty:
         st.warning("No books are available yet. Please upload a catalog first.")
         return
@@ -655,9 +858,9 @@ def teacher_review_page() -> None:
         "Select a book for review",
         options=books_df["id"].tolist(),
         index=books_df["id"].tolist().index(default_book_id) if default_book_id in books_df["id"].tolist() else 0,
-        format_func=lambda value: book_label(fetch_book_by_id(DB_CONFIG, value)),
+        format_func=lambda value: book_label(book_lookup.get(value, {})),
     )
-    book = fetch_book_by_id(DB_CONFIG, selected_book_id)
+    book = book_lookup.get(selected_book_id) or fetch_book_by_id(DB_CONFIG, selected_book_id)
     if not book:
         st.error("The selected book could not be loaded.")
         return
@@ -726,9 +929,38 @@ def teacher_review_page() -> None:
 
 def main() -> None:
     setup_page()
-    active_role = st.session_state.get("active_role", "Student")
-    page = render_sidebar_navigation(active_role)
-    active_role = st.session_state.get("active_role", "Student")
+    if not is_authenticated():
+        render_auth_page()
+        return
+
+    user = get_current_user()
+    if not user:
+        render_auth_page()
+        return
+
+    role = str(user.get("role", "student")).lower()
+    if role not in ALLOWED_ROLES:
+        st.error("This account has an invalid role configuration.")
+        logout_user()
+        st.rerun()
+        return
+
+    page = render_sidebar_navigation(role, str(user.get("full_name", "User")))
+    if st.sidebar.button("Log Out", use_container_width=True):
+        logout_user()
+        st.rerun()
+        return
+
+    allowed_pages = {
+        "student": {"Home", "Student Dashboard", "Find Books", "Story-Based Learning"},
+        "teacher": {"Home", "Teacher Dashboard", "Teacher Review"},
+        "admin": {"Home", "Admin Dashboard", "Admin: Upload Catalog"},
+    }
+    if page not in allowed_pages.get(role, set()):
+        st.error("That page is not available for your role.")
+        st.session_state["nav_page"] = default_page_for_role(role)
+        st.rerun()
+        return
 
     if page == "Home":
         home_page()
@@ -740,8 +972,10 @@ def main() -> None:
         admin_page()
     elif page == "Story-Based Learning":
         story_learning_page()
-    elif page == "Dashboard":
-        dashboard_page()
+    elif page == "Teacher Dashboard":
+        teacher_dashboard_page()
+    elif page == "Admin Dashboard":
+        admin_dashboard_page()
     elif page == "Teacher Review":
         teacher_review_page()
 

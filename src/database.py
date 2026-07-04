@@ -685,19 +685,104 @@ def _upsert_saved_book_shadow(
     book_id: int,
     status: str,
     completed_at: str | None = None,
-) -> None:
-    execute_query(
+) -> int:
+    existing_columns = get_existing_columns(config, "saved_books")
+    if not existing_columns:
+        return 0
+
+    is_saved = status in {"saved", "saved_read"}
+    is_read = status in {"read", "saved_read"}
+
+    book_values: dict[str, Any] = {}
+    if "user_id" in existing_columns:
+        book_values["user_id"] = user_id
+    if "student_id" in existing_columns:
+        book_values["student_id"] = user_id
+    if "book_id" in existing_columns:
+        book_values["book_id"] = book_id
+    if "status" in existing_columns:
+        book_values["status"] = status
+    if "saved_for_later" in existing_columns:
+        book_values["saved_for_later"] = int(is_saved)
+    if "marked_as_read" in existing_columns:
+        book_values["marked_as_read"] = int(is_read)
+
+    lookup_clauses: list[str] = []
+    lookup_params: list[Any] = []
+    if "user_id" in existing_columns:
+        lookup_clauses.append("user_id = %s")
+        lookup_params.append(user_id)
+    elif "student_id" in existing_columns:
+        lookup_clauses.append("student_id = %s")
+        lookup_params.append(user_id)
+    if "book_id" in existing_columns:
+        lookup_clauses.append("book_id = %s")
+        lookup_params.append(book_id)
+    if not lookup_clauses:
+        return 0
+
+    existing_row = fetch_one(
         config,
-        """
-        INSERT INTO saved_books (
-            user_id, book_id, status, created_at, completed_at
+        f"SELECT id FROM saved_books WHERE {' AND '.join(lookup_clauses)}",
+        lookup_params,
+    )
+
+    timestamp_sql = "CURRENT_TIMESTAMP"
+    completion_sql = timestamp_sql if is_read else "NULL"
+
+    if existing_row:
+        set_clauses = [f"{column} = %s" for column in book_values]
+        params = list(book_values.values())
+        if "saved_at" in existing_columns:
+            set_clauses.append(f"saved_at = CASE WHEN %s = 1 THEN COALESCE(saved_at, {timestamp_sql}) ELSE NULL END")
+            params.append(int(is_saved))
+        if "read_at" in existing_columns:
+            set_clauses.append(f"read_at = CASE WHEN %s = 1 THEN COALESCE(read_at, {timestamp_sql}) ELSE NULL END")
+            params.append(int(is_read))
+        if "completed_at" in existing_columns:
+            set_clauses.append(f"completed_at = CASE WHEN %s = 1 THEN COALESCE(completed_at, {timestamp_sql}) ELSE NULL END")
+            params.append(int(is_read))
+        if "updated_at" in existing_columns:
+            set_clauses.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(int(existing_row["id"]))
+        execute_query(
+            config,
+            f"""
+            UPDATE saved_books
+            SET {", ".join(set_clauses)}
+            WHERE id = %s
+            """,
+            params,
         )
-        VALUES (%s, %s, %s, CURRENT_TIMESTAMP, %s)
-        ON CONFLICT(user_id, book_id) DO UPDATE SET
-            status = EXCLUDED.status,
-            completed_at = EXCLUDED.completed_at
+        return int(existing_row["id"])
+
+    insert_columns = list(book_values.keys())
+    bound_values = list(book_values.values())
+    value_placeholders = ["%s"] * len(bound_values)
+    if "saved_at" in existing_columns:
+        insert_columns.append("saved_at")
+        value_placeholders.append(timestamp_sql if is_saved else "NULL")
+    if "read_at" in existing_columns:
+        insert_columns.append("read_at")
+        value_placeholders.append(completion_sql)
+    if "created_at" in existing_columns:
+        insert_columns.append("created_at")
+        value_placeholders.append(timestamp_sql)
+    if "updated_at" in existing_columns:
+        insert_columns.append("updated_at")
+        value_placeholders.append(timestamp_sql)
+    if "completed_at" in existing_columns:
+        insert_columns.append("completed_at")
+        value_placeholders.append(completion_sql)
+
+    return insert_and_get_id(
+        config,
+        f"""
+        INSERT INTO saved_books ({", ".join(insert_columns)})
+        VALUES ({", ".join(value_placeholders)})
+        RETURNING id
         """,
-        (user_id, book_id, status, completed_at),
+        bound_values,
     )
 
 
@@ -706,14 +791,40 @@ def log_book_opened(
     user_id: int,
     book_id: int,
 ) -> int:
+    existing_columns = get_existing_columns(config, "reading_history")
+    if not existing_columns:
+        return 0
+
+    history_values: dict[str, Any] = {}
+    if "user_id" in existing_columns:
+        history_values["user_id"] = user_id
+    if "student_id" in existing_columns:
+        history_values["student_id"] = user_id
+    if "book_id" in existing_columns:
+        history_values["book_id"] = book_id
+    if "activity_type" in existing_columns:
+        history_values["activity_type"] = "opened_book"
+    if "activity_note" in existing_columns:
+        history_values["activity_note"] = "Opened a book"
+
+    insert_columns = list(history_values.keys())
+    bound_values = list(history_values.values())
+    value_placeholders = ["%s"] * len(bound_values)
+    if "opened_at" in existing_columns:
+        insert_columns.append("opened_at")
+        value_placeholders.append("CURRENT_TIMESTAMP")
+    if "created_at" in existing_columns:
+        insert_columns.append("created_at")
+        value_placeholders.append("CURRENT_TIMESTAMP")
+
     return insert_and_get_id(
         config,
-        """
-        INSERT INTO reading_history (user_id, book_id, opened_at)
-        VALUES (%s, %s, CURRENT_TIMESTAMP)
+        f"""
+        INSERT INTO reading_history ({", ".join(insert_columns)})
+        VALUES ({", ".join(value_placeholders)})
         RETURNING id
         """,
-        (user_id, book_id),
+        bound_values,
     )
 
 
@@ -722,16 +833,25 @@ def mark_book_completed(
     user_id: int,
     book_id: int,
 ) -> None:
+    existing_columns = get_existing_columns(config, "reading_history")
+    if not existing_columns:
+        return
+
+    owner_column = "user_id" if "user_id" in existing_columns else "student_id" if "student_id" in existing_columns else None
+    order_column = "opened_at" if "opened_at" in existing_columns else "created_at" if "created_at" in existing_columns else None
+    if owner_column is None or order_column is None or "completed_at" not in existing_columns:
+        return
+
     execute_query(
         config,
-        """
+        f"""
         UPDATE reading_history
         SET completed_at = CURRENT_TIMESTAMP
         WHERE id = (
             SELECT id
             FROM reading_history
-            WHERE user_id = %s AND book_id = %s
-            ORDER BY opened_at DESC, id DESC
+            WHERE {owner_column} = %s AND book_id = %s
+            ORDER BY {order_column} DESC, id DESC
             LIMIT 1
         )
         """,
@@ -1253,28 +1373,10 @@ def update_saved_book_status_for_user(
 
     completed_at = "CURRENT_TIMESTAMP" if read_value else None
     if existing:
-        execute_query(
-            config,
-            """
-            UPDATE saved_books
-            SET status = %s, completed_at = CASE WHEN %s IN ('read', 'saved_read') THEN CURRENT_TIMESTAMP ELSE NULL END
-            WHERE id = %s
-            """,
-            (status, status, int(existing["id"])),
-        )
-        record_id = int(existing["id"])
+        record_id = _upsert_saved_book_shadow(config, user_id, book_id, status, completed_at)
     else:
-        record_id = insert_and_get_id(
-            config,
-            """
-            INSERT INTO saved_books (user_id, book_id, status, created_at, completed_at)
-            VALUES (%s, %s, %s, CURRENT_TIMESTAMP, CASE WHEN %s IN ('read', 'saved_read') THEN CURRENT_TIMESTAMP ELSE NULL END)
-            RETURNING id
-            """,
-            (user_id, book_id, status, status),
-        )
+        record_id = _upsert_saved_book_shadow(config, user_id, book_id, status, completed_at)
 
-    _upsert_saved_book_shadow(config, user_id, book_id, status, None)
     log_book_opened(config, user_id, book_id)
     if read_value:
         mark_book_completed(config, user_id, book_id)

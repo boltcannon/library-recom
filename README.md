@@ -5,7 +5,7 @@ This project is a Streamlit app that helps schools upload a library catalog, rec
 ## Features
 
 - Login, signup, logout, and role-based access control
-- Roles for `student`, `teacher`, and `admin`
+- Roles for `student` and `admin`
 - Admin user-management page for creating staff accounts and managing roles
 - Admin upload flow for Excel-based library catalogs
 - PostgreSQL-ready storage for production, with SQLite fallback for local development
@@ -87,7 +87,7 @@ If the database is empty, the app still starts safely and shows clear guidance t
 
 - The first screen is now authentication, not role switching.
 - `Sign Up` creates a `student` account.
-- `Login` works for `student`, `teacher`, and `admin` accounts.
+- `Login` works for `student` and `admin` accounts.
 - If no admin exists yet, the auth screen also shows `Create First Admin`.
 - The sidebar only shows pages that match the logged-in user's role.
 - Route access is checked in code as well, so changing `session_state` alone is not enough to unlock another role.
@@ -95,8 +95,7 @@ If the database is empty, the app still starts safely and shows clear guidance t
 ### Role access
 
 - `student`: Student Dashboard, Find Books, Story-Based Learning
-- `teacher`: Teacher Dashboard, Teacher Review
-- `admin`: Admin Dashboard, Admin User Management, Admin Upload Catalog
+- `admin`: Admin Dashboard, Admin Lesson Review, Admin User Management, Admin Upload Catalog
 
 ## First Admin Account Setup
 
@@ -117,10 +116,9 @@ On startup, the app will create or refresh that admin account securely if those 
 
 After logging in as admin, open `Admin: User Management` to:
 
-- create teacher accounts from the UI
 - create another admin if needed
-- promote a student to teacher
-- change teacher back to student
+- promote a student to admin
+- change an admin back to student
 - deactivate or reactivate accounts
 
 Inactive users cannot log in.

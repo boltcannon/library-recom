@@ -394,24 +394,21 @@ def inject_global_styles() -> None:
 
 
 def render_brand_header(role: str | None = None) -> None:
-    role_label = ""
+    subtitle_parts = ['<p class="brand-subtitle">School library discovery and story-based learning</p>']
     if role:
-        role_label = f'<div class="brand-subtitle">{escape(role.title())} experience</div>'
-    st.markdown(
-        f"""
-        <div class="brand-shell">
-            <div class="brand-mark">
-                <div class="brand-icon">SS</div>
-                <div>
-                    <p class="brand-title">StoryShelf</p>
-                    <p class="brand-subtitle">School library discovery and story-based learning</p>
-                    {role_label}
-                </div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+        subtitle_parts.append(f'<p class="brand-subtitle">{escape(role.title())} experience</p>')
+    brand_html = (
+        '<div class="brand-shell">'
+        '<div class="brand-mark">'
+        '<div class="brand-icon">SS</div>'
+        '<div>'
+        '<p class="brand-title">StoryShelf</p>'
+        f'{"".join(subtitle_parts)}'
+        '</div>'
+        '</div>'
+        '</div>'
     )
+    st.markdown(brand_html, unsafe_allow_html=True)
 
 
 def render_hero(title: str, body: str, kicker: str = "School Library MVP") -> None:

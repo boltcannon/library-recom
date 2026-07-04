@@ -188,9 +188,7 @@ def enforce_role(required_roles: set[str]) -> dict | None:
 
 def render_auth_page() -> None:
     admin_exists = fetch_admin_user_count(DB_CONFIG) > 0
-    auth_options = ["Login", "Sign Up"]
-    if not admin_exists:
-        auth_options.append("Create First Admin")
+    auth_options = ["Login", "Sign Up", "Admin Sign Up"]
 
     render_brand_header()
     render_hero(
@@ -203,14 +201,18 @@ def render_auth_page() -> None:
         auth_options,
         horizontal=True,
         index=max(0, auth_options.index(
-            "Create First Admin" if st.session_state.get("auth_view") == "admin_setup" and "Create First Admin" in auth_options
+            "Admin Sign Up" if st.session_state.get("auth_view") == "admin_setup"
             else "Sign Up" if st.session_state.get("auth_view") == "signup"
             else "Login"
         )),
     )
+    if admin_exists:
+        st.caption("Admin access uses the same login form. Log in with an admin email to open the admin panel.")
+    else:
+        st.caption("No admin account exists yet. Choose `Admin Sign Up` to create the first admin account.")
     if selected_view == "Login":
         st.session_state["auth_view"] = "login"
-    elif selected_view == "Create First Admin":
+    elif selected_view == "Admin Sign Up":
         st.session_state["auth_view"] = "admin_setup"
     else:
         st.session_state["auth_view"] = "signup"
@@ -264,8 +266,8 @@ def render_auth_page() -> None:
                         st.rerun()
     else:
         with st.container(border=True):
-            st.markdown("### Create First Admin")
-            st.caption("Use this once to set up the admin who will upload catalogs, manage users, and review lessons.")
+            st.markdown("### Admin Sign Up")
+            st.caption("Use this to create the first admin account. After that, additional admins should be created from the admin panel.")
             with st.form("first_admin_form"):
                 full_name = st.text_input("Admin full name", value="School Admin")
                 email = st.text_input("Admin email")

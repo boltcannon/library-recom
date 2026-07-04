@@ -6,6 +6,7 @@ This project is a Streamlit app that helps schools upload a library catalog, rec
 
 - Login, signup, logout, and role-based access control
 - Roles for `student`, `teacher`, and `admin`
+- Admin user-management page for creating staff accounts and managing roles
 - Admin upload flow for Excel-based library catalogs
 - PostgreSQL-ready storage for production, with SQLite fallback for local development
 - Rule-based enrichment for length, reading level, genre, and subject tags
@@ -94,7 +95,7 @@ If the database is empty, the app still starts safely and shows clear guidance t
 
 - `student`: Student Dashboard, Find Books, Story-Based Learning
 - `teacher`: Teacher Dashboard, Teacher Review
-- `admin`: Admin Dashboard, Admin Upload Catalog
+- `admin`: Admin Dashboard, Admin User Management, Admin Upload Catalog
 
 ## First Admin Account Setup
 
@@ -108,7 +109,15 @@ FIRST_ADMIN_PASSWORD=StrongPass1
 
 On startup, the app will create or refresh that admin account securely.
 
-If you need a teacher account, create a user record and set its `role` to `teacher` in the database, or promote an existing account directly in PostgreSQL/SQLite.
+After logging in as admin, open `Admin: User Management` to:
+
+- create teacher accounts from the UI
+- create another admin if needed
+- promote a student to teacher
+- change teacher back to student
+- deactivate or reactivate accounts
+
+Inactive users cannot log in.
 
 ## How to Upload Catalog
 

@@ -172,6 +172,7 @@ USER_COLUMN_TYPES = {
     "email": "TEXT UNIQUE NOT NULL",
     "password_hash": "TEXT NOT NULL",
     "role": "TEXT NOT NULL DEFAULT 'student'",
+    "is_active": "BOOLEAN NOT NULL DEFAULT TRUE",
     "created_at": "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
 }
 
@@ -316,20 +317,7 @@ def insert_and_get_id(config: DatabaseConfig, query: str, params: Sequence[Any] 
 
 
 def ensure_table_columns(config: DatabaseConfig, table_name: str, expected_columns: dict[str, str]) -> None:
-    if config.is_postgres:
-        rows = fetch_all(
-            config,
-            """
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_schema = 'public' AND table_name = %s
-            """,
-            (table_name,),
-        )
-        existing_columns = {row["column_name"] for row in rows}
-    else:
-        rows = fetch_all(config, f"PRAGMA table_info({table_name})")
-        existing_columns = {row["name"] for row in rows}
+    existing_columns = get_existing_columns(config, table_name)
 
     for column, column_type in expected_columns.items():
         if column not in existing_columns:
@@ -342,6 +330,272 @@ def ensure_index(config: DatabaseConfig, index_name: str, table_name: str, colum
         config,
         f"CREATE {unique_sql}INDEX IF NOT EXISTS {index_name} ON {table_name} ({columns})",
     )
+
+
+def get_existing_columns(config: DatabaseConfig, table_name: str) -> set[str]:
+    if config.is_postgres:
+        rows = fetch_all(
+            config,
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = %s
+            """,
+            (table_name,),
+        )
+        return {row["column_name"] for row in rows}
+    rows = fetch_all(config, f"PRAGMA table_info({table_name})")
+    return {row["name"] for row in rows}
+
+
+def _migrate_legacy_student_profiles(config: DatabaseConfig) -> None:
+    existing_columns = get_existing_columns(config, "student_profiles")
+    if not existing_columns:
+        return
+
+    if "user_id" not in existing_columns:
+        execute_query(config, "ALTER TABLE student_profiles ADD COLUMN user_id INTEGER")
+        existing_columns.add("user_id")
+    if "class_grade" not in existing_columns:
+        execute_query(config, "ALTER TABLE student_profiles ADD COLUMN class_grade TEXT")
+        existing_columns.add("class_grade")
+    if "reading_level" not in existing_columns:
+        execute_query(config, "ALTER TABLE student_profiles ADD COLUMN reading_level TEXT")
+        existing_columns.add("reading_level")
+
+    if "student_id" in existing_columns:
+        execute_query(
+            config,
+            """
+            UPDATE student_profiles
+            SET user_id = COALESCE(user_id, student_id, id)
+            WHERE user_id IS NULL
+            """,
+        )
+    if "grade" in existing_columns:
+        execute_query(
+            config,
+            """
+            UPDATE student_profiles
+            SET class_grade = COALESCE(class_grade, grade)
+            WHERE class_grade IS NULL
+            """,
+        )
+    if "reading_comfort_level" in existing_columns:
+        execute_query(
+            config,
+            """
+            UPDATE student_profiles
+            SET reading_level = COALESCE(reading_level, reading_comfort_level)
+            WHERE reading_level IS NULL
+            """,
+        )
+
+
+def _migrate_legacy_users(config: DatabaseConfig) -> None:
+    existing_columns = get_existing_columns(config, "users")
+    if not existing_columns:
+        return
+
+    if "full_name" not in existing_columns:
+        execute_query(config, "ALTER TABLE users ADD COLUMN full_name TEXT")
+        existing_columns.add("full_name")
+    if "password_hash" not in existing_columns:
+        execute_query(config, "ALTER TABLE users ADD COLUMN password_hash TEXT")
+        existing_columns.add("password_hash")
+    if "is_active" not in existing_columns:
+        execute_query(config, "ALTER TABLE users ADD COLUMN is_active BOOLEAN")
+        existing_columns.add("is_active")
+
+    if "name" in existing_columns:
+        execute_query(
+            config,
+            """
+            UPDATE users
+            SET full_name = COALESCE(full_name, name, email, 'User')
+            WHERE full_name IS NULL
+            """,
+        )
+    else:
+        execute_query(
+            config,
+            """
+            UPDATE users
+            SET full_name = COALESCE(full_name, email, 'User')
+            WHERE full_name IS NULL
+            """,
+        )
+
+    execute_query(
+        config,
+        """
+        UPDATE users
+        SET role = COALESCE(role, 'student')
+        WHERE role IS NULL
+        """,
+    )
+    execute_query(
+        config,
+        """
+        UPDATE users
+        SET is_active = COALESCE(is_active, TRUE)
+        WHERE is_active IS NULL
+        """,
+    )
+    execute_query(
+        config,
+        """
+        UPDATE users
+        SET password_hash = COALESCE(password_hash, '')
+        WHERE password_hash IS NULL
+        """,
+    )
+
+
+def _migrate_legacy_saved_books(config: DatabaseConfig) -> None:
+    existing_columns = get_existing_columns(config, "saved_books")
+    if not existing_columns:
+        return
+
+    if "user_id" not in existing_columns:
+        execute_query(config, "ALTER TABLE saved_books ADD COLUMN user_id INTEGER")
+        existing_columns.add("user_id")
+    if "status" not in existing_columns:
+        execute_query(config, "ALTER TABLE saved_books ADD COLUMN status TEXT")
+        existing_columns.add("status")
+    if "created_at" not in existing_columns:
+        execute_query(config, "ALTER TABLE saved_books ADD COLUMN created_at TIMESTAMP")
+        existing_columns.add("created_at")
+    if "completed_at" not in existing_columns:
+        execute_query(config, "ALTER TABLE saved_books ADD COLUMN completed_at TIMESTAMP")
+        existing_columns.add("completed_at")
+
+    if "student_id" in existing_columns:
+        execute_query(
+            config,
+            """
+            UPDATE saved_books
+            SET user_id = COALESCE(user_id, student_id)
+            WHERE user_id IS NULL
+            """,
+        )
+
+    if "saved_for_later" in existing_columns or "marked_as_read" in existing_columns:
+        execute_query(
+            config,
+            """
+            UPDATE saved_books
+            SET status = COALESCE(
+                status,
+                CASE
+                    WHEN COALESCE(marked_as_read, 0) = 1 AND COALESCE(saved_for_later, 0) = 1 THEN 'saved_read'
+                    WHEN COALESCE(marked_as_read, 0) = 1 THEN 'read'
+                    WHEN COALESCE(saved_for_later, 0) = 1 THEN 'saved'
+                    ELSE 'removed'
+                END
+            )
+            WHERE status IS NULL
+            """,
+        )
+    else:
+        execute_query(
+            config,
+            """
+            UPDATE saved_books
+            SET status = COALESCE(status, 'saved')
+            WHERE status IS NULL
+            """,
+        )
+
+    if "saved_at" in existing_columns:
+        execute_query(
+            config,
+            """
+            UPDATE saved_books
+            SET created_at = COALESCE(created_at, saved_at, CURRENT_TIMESTAMP)
+            WHERE created_at IS NULL
+            """,
+        )
+    else:
+        execute_query(
+            config,
+            """
+            UPDATE saved_books
+            SET created_at = COALESCE(created_at, CURRENT_TIMESTAMP)
+            WHERE created_at IS NULL
+            """,
+        )
+
+    if "read_at" in existing_columns:
+        execute_query(
+            config,
+            """
+            UPDATE saved_books
+            SET completed_at = COALESCE(completed_at, read_at)
+            WHERE completed_at IS NULL
+            """,
+        )
+
+
+def _migrate_legacy_reading_history(config: DatabaseConfig) -> None:
+    existing_columns = get_existing_columns(config, "reading_history")
+    if not existing_columns:
+        return
+
+    if "user_id" not in existing_columns:
+        execute_query(config, "ALTER TABLE reading_history ADD COLUMN user_id INTEGER")
+        existing_columns.add("user_id")
+    if "opened_at" not in existing_columns:
+        execute_query(config, "ALTER TABLE reading_history ADD COLUMN opened_at TIMESTAMP")
+        existing_columns.add("opened_at")
+    if "completed_at" not in existing_columns:
+        execute_query(config, "ALTER TABLE reading_history ADD COLUMN completed_at TIMESTAMP")
+        existing_columns.add("completed_at")
+
+    if "student_id" in existing_columns:
+        execute_query(
+            config,
+            """
+            UPDATE reading_history
+            SET user_id = COALESCE(user_id, student_id)
+            WHERE user_id IS NULL
+            """,
+        )
+
+    if "created_at" in existing_columns:
+        execute_query(
+            config,
+            """
+            UPDATE reading_history
+            SET opened_at = COALESCE(opened_at, created_at, CURRENT_TIMESTAMP)
+            WHERE opened_at IS NULL
+            """,
+        )
+    else:
+        execute_query(
+            config,
+            """
+            UPDATE reading_history
+            SET opened_at = COALESCE(opened_at, CURRENT_TIMESTAMP)
+            WHERE opened_at IS NULL
+            """,
+        )
+
+    if "activity_type" in existing_columns:
+        execute_query(
+            config,
+            """
+            UPDATE reading_history
+            SET completed_at = COALESCE(
+                completed_at,
+                CASE
+                    WHEN activity_type IN ('marked_read', 'quiz_completed') THEN COALESCE(opened_at, CURRENT_TIMESTAMP)
+                    ELSE completed_at
+                END
+            )
+            WHERE completed_at IS NULL
+            """,
+        )
 
 
 def _upsert_student_profile_shadow(
@@ -440,10 +694,12 @@ def _init_db_schema(config: DatabaseConfig) -> None:
             email TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
             role TEXT NOT NULL DEFAULT 'student',
+            is_active BOOLEAN NOT NULL DEFAULT TRUE,
             created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
         """,
     )
+    _migrate_legacy_users(config)
     ensure_table_columns(config, "users", USER_COLUMN_TYPES)
     ensure_index(config, "idx_users_email_unique", "users", "email", unique=True)
 
@@ -506,6 +762,7 @@ def _init_db_schema(config: DatabaseConfig) -> None:
         )
         """,
     )
+    _migrate_legacy_student_profiles(config)
     ensure_table_columns(config, "student_profiles", STUDENT_PROFILE_COLUMN_TYPES)
     ensure_index(config, "idx_student_profiles_user_id_unique", "student_profiles", "user_id", unique=True)
 
@@ -638,6 +895,7 @@ def _init_db_schema(config: DatabaseConfig) -> None:
         )
         """,
     )
+    _migrate_legacy_saved_books(config)
     ensure_table_columns(config, "saved_books", SAVED_BOOK_COLUMN_TYPES)
     ensure_index(config, "idx_saved_books_user_book_unique", "saved_books", "user_id, book_id", unique=True)
 
@@ -675,6 +933,7 @@ def _init_db_schema(config: DatabaseConfig) -> None:
         )
         """,
     )
+    _migrate_legacy_reading_history(config)
     ensure_table_columns(config, "reading_history", READING_HISTORY_COLUMN_TYPES)
 
     execute_query(
@@ -732,6 +991,21 @@ def fetch_user_by_id(config: DatabaseConfig, user_id: int) -> dict[str, Any] | N
     return fetch_one(config, "SELECT * FROM users WHERE id = %s", (user_id,))
 
 
+@st.cache_data(show_spinner=False)
+def fetch_all_users(config: DatabaseConfig) -> pd.DataFrame:
+    init_db(config)
+    return pd.DataFrame(
+        fetch_all(
+            config,
+            """
+            SELECT id, full_name, email, role, is_active, created_at
+            FROM users
+            ORDER BY created_at DESC, LOWER(COALESCE(full_name, ''))
+            """,
+        )
+    )
+
+
 def create_user(
     config: DatabaseConfig,
     full_name: str,
@@ -743,8 +1017,8 @@ def create_user(
     user_id = insert_and_get_id(
         config,
         """
-        INSERT INTO users (full_name, email, password_hash, role)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO users (full_name, email, password_hash, role, is_active)
+        VALUES (%s, %s, %s, %s, TRUE)
         RETURNING id
         """,
         (full_name.strip(), normalize_email(email), hash_password(password), role.strip().lower()),
@@ -762,9 +1036,47 @@ def create_user(
     return user_id
 
 
+def update_user_role(
+    config: DatabaseConfig,
+    user_id: int,
+    new_role: str,
+) -> None:
+    init_db(config)
+    execute_query(
+        config,
+        """
+        UPDATE users
+        SET role = %s
+        WHERE id = %s
+        """,
+        (new_role.strip().lower(), user_id),
+    )
+    clear_data_caches()
+
+
+def update_user_active_status(
+    config: DatabaseConfig,
+    user_id: int,
+    is_active: bool,
+) -> None:
+    init_db(config)
+    execute_query(
+        config,
+        """
+        UPDATE users
+        SET is_active = %s
+        WHERE id = %s
+        """,
+        (bool(is_active), user_id),
+    )
+    clear_data_caches()
+
+
 def authenticate_user(config: DatabaseConfig, email: str, password: str) -> dict[str, Any] | None:
     user = fetch_user_by_email(config, email)
     if not user:
+        return None
+    if not bool(user.get("is_active", True)):
         return None
     password_hash = str(user.get("password_hash", "") or "")
     if not password_hash or not verify_password(password, password_hash):
@@ -1634,6 +1946,7 @@ def fetch_dashboard_metrics(config: DatabaseConfig) -> dict[str, Any]:
 
 
 def clear_data_caches() -> None:
+    fetch_all_users.clear()
     fetch_user_by_email.clear()
     fetch_user_by_id.clear()
     fetch_student_profile_for_user.clear()

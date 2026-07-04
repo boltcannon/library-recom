@@ -13,6 +13,7 @@ from src.database import (
     create_user,
     create_recommendation_session,
     ensure_admin_account,
+    fetch_all_users,
     fetch_all_books,
     fetch_book_by_id,
     fetch_dashboard_metrics,
@@ -30,6 +31,8 @@ from src.database import (
     save_reviewed_lesson,
     save_student_profile_for_user,
     save_user_feedback,
+    update_user_active_status,
+    update_user_role,
     update_saved_book_status_for_user,
 )
 from src.ingest_catalog import ingest_catalog
@@ -837,6 +840,97 @@ def admin_dashboard_page() -> None:
             st.dataframe(most_selected_books, use_container_width=True, hide_index=True)
 
 
+def admin_user_management_page() -> None:
+    current_admin = enforce_role({"admin"})
+    if not current_admin:
+        return
+
+    render_hero(
+        "Admin: User Management",
+        "Create teacher accounts, review users, change roles, and control whether accounts can log in.",
+        kicker="Admin space",
+    )
+
+    with st.container(border=True):
+        st.markdown("### Create Staff Account")
+        with st.form("create_staff_form"):
+            full_name = st.text_input("Full name")
+            email = st.text_input("Email")
+            password = st.text_input("Temporary password", type="password")
+            role = st.selectbox("Role", ["teacher", "admin"], index=0)
+            create_submitted = st.form_submit_button("Create Account", type="primary", use_container_width=True)
+
+        if create_submitted:
+            if not full_name.strip():
+                st.error("Please enter the full name.")
+            elif not is_valid_email(email):
+                st.error("Please enter a valid email address.")
+            elif fetch_user_by_email(DB_CONFIG, email):
+                st.error("An account with this email already exists.")
+            else:
+                password_error = validate_password_rules(password)
+                if password_error:
+                    st.error(password_error)
+                else:
+                    create_user(DB_CONFIG, full_name=full_name, email=email, password=password, role=role)
+                    st.success(f"{role.title()} account created successfully.")
+                    st.rerun()
+
+    users_df = fetch_all_users(DB_CONFIG)
+    st.markdown("### All Users")
+    if users_df.empty:
+        st.info("No users found yet.")
+        return
+
+    display_df = users_df.copy()
+    display_df["is_active"] = display_df["is_active"].apply(lambda value: "Active" if bool(value) else "Inactive")
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    st.markdown("### Manage Existing Users")
+    for _, row in users_df.iterrows():
+        user_id = int(row["id"])
+        is_self = user_id == int(current_admin["id"])
+        role_value = str(row["role"])
+        is_active = bool(row["is_active"])
+        with st.expander(f"{row['full_name']} · {row['email']} · {role_value.title()}", expanded=False):
+            st.write(f"**User ID:** {user_id}")
+            st.write(f"**Created at:** {row['created_at']}")
+            if is_self:
+                st.warning("This is your current admin account. Self-demotion and self-deactivation are blocked.")
+
+            with st.form(f"user_manage_{user_id}"):
+                new_role = st.selectbox(
+                    "Role",
+                    ["student", "teacher", "admin"],
+                    index=["student", "teacher", "admin"].index(role_value if role_value in {"student", "teacher", "admin"} else "student"),
+                    key=f"role_select_{user_id}",
+                )
+                new_active = st.checkbox("Account is active", value=is_active, key=f"active_toggle_{user_id}")
+                confirm_change = st.checkbox("I understand this will change this user's access", key=f"confirm_change_{user_id}")
+                save_changes = st.form_submit_button("Save Changes", use_container_width=True)
+
+            if save_changes:
+                if not confirm_change:
+                    st.error("Please confirm the change before saving.")
+                elif is_self and new_role != "admin":
+                    st.error("You cannot demote your own admin account.")
+                elif is_self and not new_active:
+                    st.error("You cannot deactivate your own admin account.")
+                else:
+                    changed_anything = False
+                    if new_role != role_value:
+                        update_user_role(DB_CONFIG, user_id, new_role)
+                        changed_anything = True
+                    if new_active != is_active:
+                        update_user_active_status(DB_CONFIG, user_id, new_active)
+                        changed_anything = True
+                    if changed_anything:
+                        st.success("User account updated.")
+                        st.rerun()
+                    else:
+                        st.info("No changes were made.")
+
+
 def teacher_review_page() -> None:
     if not enforce_role({"teacher"}):
         return
@@ -944,6 +1038,11 @@ def main() -> None:
         logout_user()
         st.rerun()
         return
+    if not bool(user.get("is_active", True)):
+        st.error("This account is inactive. Please contact an administrator.")
+        logout_user()
+        st.rerun()
+        return
 
     page = render_sidebar_navigation(role, str(user.get("full_name", "User")))
     if st.sidebar.button("Log Out", use_container_width=True):
@@ -954,7 +1053,7 @@ def main() -> None:
     allowed_pages = {
         "student": {"Home", "Student Dashboard", "Find Books", "Story-Based Learning"},
         "teacher": {"Home", "Teacher Dashboard", "Teacher Review"},
-        "admin": {"Home", "Admin Dashboard", "Admin: Upload Catalog"},
+        "admin": {"Home", "Admin Dashboard", "Admin: User Management", "Admin: Upload Catalog"},
     }
     if page not in allowed_pages.get(role, set()):
         st.error("That page is not available for your role.")
@@ -976,6 +1075,8 @@ def main() -> None:
         teacher_dashboard_page()
     elif page == "Admin Dashboard":
         admin_dashboard_page()
+    elif page == "Admin: User Management":
+        admin_user_management_page()
     elif page == "Teacher Review":
         teacher_review_page()
 

@@ -114,6 +114,7 @@ def render_sidebar_navigation(role: str, user_name: str) -> str:
         "admin": [
             "Home",
             "Admin Dashboard",
+            "Admin: User Management",
             "Admin: Upload Catalog",
         ],
     }
@@ -130,7 +131,7 @@ def render_sidebar_navigation(role: str, user_name: str) -> str:
     flow_text = {
         "student": "1. Set your profile\n2. Find books\n3. Build a lesson\n4. Take a quiz",
         "teacher": "1. Open the dashboard\n2. Review content\n3. Save and export",
-        "admin": "1. Check the dashboard\n2. Upload a catalog\n3. Support teachers and students",
+        "admin": "1. Check the dashboard\n2. Manage users\n3. Upload a catalog",
     }
     st.sidebar.markdown(f"**Suggested flow**\n\n{flow_text.get(role, flow_text['student'])}")
     return page

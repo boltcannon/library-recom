@@ -5,11 +5,12 @@ from typing import BinaryIO
 
 import pandas as pd
 
+from src.config import DatabaseConfig
 from src.database import BOOK_COLUMNS, replace_books
 from src.utils import clean_catalog_dataframe, detect_tags, infer_length_type, infer_reading_level, list_to_text
 
 
-def ingest_catalog(uploaded_file: str | Path | BinaryIO, db_path: str | Path) -> dict[str, object]:
+def ingest_catalog(uploaded_file: str | Path | BinaryIO, db_config: DatabaseConfig) -> dict[str, object]:
     try:
         raw_df = pd.read_excel(uploaded_file, engine="openpyxl")
     except ImportError as exc:
@@ -39,7 +40,7 @@ def ingest_catalog(uploaded_file: str | Path | BinaryIO, db_path: str | Path) ->
     enriched_df["subject_tags"] = tag_values.apply(lambda tags: list_to_text(tags[1]))
 
     catalog_df = enriched_df.reindex(columns=BOOK_COLUMNS, fill_value="")
-    imported_count = replace_books(db_path, catalog_df)
+    imported_count = replace_books(db_config, catalog_df)
 
     preview_columns = [
         "title",

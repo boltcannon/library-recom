@@ -1,19 +1,34 @@
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
-import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = BASE_DIR / "database" / "library.db"
 TMP_DB_PATH = Path(tempfile.gettempdir()) / "library_recom.db"
-_DB_PATH_WARNING = ""
-logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class DatabaseConfig:
+    backend: str
+    database_url: str | None = None
+    sqlite_path: Path | None = None
+
+    @property
+    def is_postgres(self) -> bool:
+        return self.backend == "postgresql"
+
+    @property
+    def is_sqlite(self) -> bool:
+        return self.backend == "sqlite"
 
 
 def _is_writable_database_path(path: Path) -> bool:
@@ -26,8 +41,7 @@ def _is_writable_database_path(path: Path) -> bool:
         return False
 
 
-def get_database_path() -> Path:
-    global _DB_PATH_WARNING
+def _resolve_local_sqlite_path() -> Path:
     configured_path = os.getenv("LIBRARY_DB_PATH", "").strip()
     candidates: list[Path] = []
     if configured_path:
@@ -37,19 +51,15 @@ def get_database_path() -> Path:
 
     for candidate in candidates:
         if _is_writable_database_path(candidate):
-            if configured_path and candidate != Path(configured_path).expanduser():
-                _DB_PATH_WARNING = (
-                    f"Configured LIBRARY_DB_PATH '{configured_path}' is not writable. "
-                    f"Using fallback database path '{candidate}'."
-                )
-                logger.warning(_DB_PATH_WARNING)
-            else:
-                _DB_PATH_WARNING = ""
             return candidate
 
-    _DB_PATH_WARNING = "No writable database location was found. Using the default database path may fail."
+    logger.warning("No writable SQLite database location was found. Falling back to the default path.")
     return DEFAULT_DB_PATH
 
 
-def get_database_warning() -> str:
-    return _DB_PATH_WARNING
+def get_database_config() -> DatabaseConfig:
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if database_url:
+        return DatabaseConfig(backend="postgresql", database_url=database_url)
+
+    return DatabaseConfig(backend="sqlite", sqlite_path=_resolve_local_sqlite_path())

@@ -1,17 +1,17 @@
 # School Library Recommendation and Story-Based Learning Bot
 
-This project is a Streamlit MVP that helps schools upload a library catalog, recommend real books to students, and generate simple story-based concept lessons from book abstracts.
+This project is a Streamlit app that helps schools upload a library catalog, recommend real books to students, and generate simple story-based concept lessons from book abstracts.
 
 ## Features
 
 - Admin upload flow for Excel-based library catalogs
-- SQLite storage for cleaned and enriched catalog records
+- PostgreSQL-ready storage for production, with SQLite fallback for local development
 - Rule-based enrichment for length, reading level, genre, and subject tags
 - Student recommendation flow based on grade, topic, type, length, and reading level
 - Cleaner Streamlit UI with guided sidebar flow, recommendation cards, and lesson review sections
 - Story-based lesson generation with optional OpenAI support
 - Teacher review mode with lesson editing, saving, and export
-- SQLite logging for recommendation sessions, selected books, lessons, and feedback
+- Database logging for recommendation sessions, selected books, lessons, and feedback
 - Basic dashboard for uploads, sessions, popular books, and average rating
 - Safe fallback lesson template when no API key is available
 - Deployment-ready config for local runs, Streamlit Community Cloud, Render, and Railway
@@ -58,11 +58,13 @@ Example `.env`:
 
 ```env
 OPENAI_API_KEY=your_api_key_here
+DATABASE_URL=
 LIBRARY_DB_PATH=database/library.db
 ```
 
 - `OPENAI_API_KEY` is optional. If it is missing, the app safely uses the fallback lesson generator.
-- `LIBRARY_DB_PATH` is optional. If it is missing, the app safely uses `database/library.db`.
+- `DATABASE_URL` is optional for local development, but it should be set in production.
+- `LIBRARY_DB_PATH` is only used for local SQLite fallback when `DATABASE_URL` is not set.
 
 ## How to Run
 
@@ -70,7 +72,7 @@ LIBRARY_DB_PATH=database/library.db
 streamlit run app.py
 ```
 
-The app uses `database/library.db` for storage and will create the database table automatically if needed.
+If `DATABASE_URL` is set, the app uses PostgreSQL. If it is not set, the app falls back to a local SQLite database and creates the tables automatically if needed.
 
 If the database is empty, the app still starts safely and shows clear guidance to upload a catalog first.
 
@@ -113,7 +115,7 @@ The app returns 3 to 5 recommendations, a score breakdown for each book, and a c
 
 ## Evaluation And Logging
 
-The app also stores lightweight evaluation data in SQLite:
+The app also stores lightweight evaluation data in the database:
 
 - `recommendation_sessions`
 - `selected_books`
@@ -133,13 +135,13 @@ It logs student grade, preferences, recommended books, selected books, chosen su
 
 ```toml
 OPENAI_API_KEY="your_api_key_here"
-LIBRARY_DB_PATH="database/library.db"
+DATABASE_URL="postgresql://..."
 ```
 
 Notes:
 
 - `OPENAI_API_KEY` is optional.
-- SQLite works for simple demos, but Community Cloud storage is not meant for durable production persistence.
+- Streamlit Community Cloud should use `DATABASE_URL` if you want durable production-style persistence.
 
 ### Render
 
@@ -153,8 +155,9 @@ Suggested settings:
 Notes:
 
 - A `Procfile` is included for platforms that support it.
+- Set `DATABASE_URL` to your Render PostgreSQL connection string.
 - Set `OPENAI_API_KEY` only if you want AI lesson generation.
-- Set `LIBRARY_DB_PATH` if you want the SQLite database stored in a custom mounted path.
+- `LIBRARY_DB_PATH` is not needed on Render when PostgreSQL is used.
 
 ### Railway
 
@@ -166,12 +169,13 @@ Suggested setup:
 
 Environment variables:
 
+- `DATABASE_URL` for PostgreSQL
 - `OPENAI_API_KEY` optional
-- `LIBRARY_DB_PATH` optional
+- `LIBRARY_DB_PATH` optional for local SQLite fallback only
 
 ### Important deployment note
 
-SQLite is fine for an MVP and demos, but on Render or Railway it may be ephemeral unless you attach persistent disk/storage and point `LIBRARY_DB_PATH` there.
+For Render production, use PostgreSQL through `DATABASE_URL`. SQLite remains useful for local development and quick demos when `DATABASE_URL` is not present.
 
 ## How Story-Based Lesson Generation Works
 
@@ -193,7 +197,7 @@ SQLite is fine for an MVP and demos, but on Render or Railway it may be ephemera
 - Tagging depends on keyword matching.
 - The quality of story-based teaching depends on the quality of the book abstract.
 - OpenAI generation requires a valid API key and internet access at runtime.
-- SQLite persistence on hosted platforms depends on the storage provided by that platform.
+- If you stay on SQLite locally, the database file persistence depends on the local path you choose.
 
 ## Future Improvements
 

@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 
 from src.chatbot_logic import collect_student_preferences
-from src.config import get_database_path
+from src.config import get_database_config
 from src.database import (
     create_recommendation_session,
     fetch_all_books,
@@ -46,7 +46,7 @@ from src.ui_helpers import (
 )
 from src.utils import book_label
 
-DB_PATH = get_database_path()
+DB_CONFIG = get_database_config()
 LANGUAGE_OPTIONS = ["English", "Hindi", "Bilingual", "Other"]
 READING_LEVEL_OPTIONS = ["easy", "medium", "challenging"]
 
@@ -58,7 +58,7 @@ def setup_page() -> None:
         layout="wide",
     )
     inject_global_styles()
-    init_db(DB_PATH)
+    init_db(DB_CONFIG)
     st.session_state.setdefault("active_role", "Student")
     st.session_state.setdefault("recommended_books", [])
     st.session_state.setdefault("selected_book_id", None)
@@ -87,7 +87,7 @@ def require_student_profile() -> dict | None:
         st.info("Please create or select a student profile first from the Student Dashboard.")
         return None
 
-    profile = fetch_student_profile(DB_PATH, int(student_id))
+    profile = fetch_student_profile(DB_CONFIG, int(student_id))
     if not profile:
         st.warning("The selected student profile could not be found. Please choose or create it again.")
         st.session_state["active_student_id"] = None
@@ -104,7 +104,7 @@ def require_student_profile() -> dict | None:
 
 
 def render_student_profile_manager() -> None:
-    students_df = fetch_students(DB_PATH)
+    students_df = fetch_students(DB_CONFIG)
     current_student_id = st.session_state.get("active_student_id")
 
     with st.container(border=True):
@@ -122,7 +122,7 @@ def render_student_profile_manager() -> None:
             if selected_existing != current_student_id:
                 st.session_state["active_student_id"] = selected_existing
                 if selected_existing:
-                    profile = fetch_student_profile(DB_PATH, int(selected_existing))
+                    profile = fetch_student_profile(DB_CONFIG, int(selected_existing))
                     if profile:
                         st.session_state["student_profile"] = {
                             "name": profile["name"],
@@ -163,7 +163,7 @@ def render_student_profile_manager() -> None:
                 st.error("Please enter the student's name.")
             else:
                 student_id = save_student_profile(
-                    DB_PATH,
+                    DB_CONFIG,
                     name=name,
                     grade=grade,
                     preferred_language=preferred_language,
@@ -224,7 +224,7 @@ def home_page() -> None:
 def admin_page() -> None:
     render_hero(
         "Admin: Upload Catalog",
-        "Upload the school library Excel file and safely store it in SQLite.",
+        "Upload the school library Excel file and safely store it in the app database.",
         kicker="Admin space",
     )
     st.write("The upload flow handles missing columns safely so imperfect catalog exports can still be imported.")
@@ -237,13 +237,13 @@ def admin_page() -> None:
     if st.button("Import Catalog", type="primary", use_container_width=True):
         try:
             with st.spinner("Importing and enriching catalog data..."):
-                result = ingest_catalog(uploaded_file, DB_PATH)
+                result = ingest_catalog(uploaded_file, DB_CONFIG)
         except Exception as exc:  # noqa: BLE001
             st.error(f"Catalog upload failed: {exc}")
             return
 
         reset_student_learning_state()
-        log_catalog_upload(DB_PATH, result["imported_count"], result["columns"])
+        log_catalog_upload(DB_CONFIG, result["imported_count"], result["columns"])
 
         st.success(f"Catalog uploaded successfully. Imported {result['imported_count']} items.")
         with st.expander("See detected columns and preview", expanded=True):
@@ -262,7 +262,7 @@ def student_dashboard_page() -> None:
     if not profile:
         return
 
-    dashboard = fetch_student_dashboard_data(DB_PATH, int(profile["id"]))
+    dashboard = fetch_student_dashboard_data(DB_CONFIG, int(profile["id"]))
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Books explored", dashboard["total_books_explored"])
     c2.metric("Saved books", dashboard["total_books_saved"])
@@ -304,7 +304,7 @@ def student_page() -> None:
         "Chat with the library bot by answering a few questions about what you like to read.",
         kicker="Student journey",
     )
-    books_df = fetch_all_books(DB_PATH)
+    books_df = fetch_all_books(DB_CONFIG)
     if books_df.empty:
         st.warning("No books are available yet. Please ask the admin to upload a library catalog first.")
         return
@@ -342,7 +342,7 @@ def student_page() -> None:
             "reading_level": profile.get("reading_comfort_level", ""),
         }
         st.session_state["active_session_id"] = create_recommendation_session(
-            DB_PATH,
+            DB_CONFIG,
             student_id=int(profile["id"]),
             grade=preferences.get("grade", ""),
             preferences=preferences,
@@ -364,7 +364,7 @@ def student_page() -> None:
         render_status_tip("What happens next?", "After you answer the questions, the app will show 3 to 5 book recommendations.")
         return
 
-    student_book_statuses = fetch_student_book_statuses(DB_PATH, int(profile["id"]))
+    student_book_statuses = fetch_student_book_statuses(DB_CONFIG, int(profile["id"]))
     st.markdown("### Step 2: Explore Your Book Cards")
     recommendation_df = pd.DataFrame(recommended_books)
     for _, row in recommendation_df.iterrows():
@@ -377,7 +377,7 @@ def student_page() -> None:
         with col1:
             if st.button(saved_label, key=f"save_book_{book_id}", use_container_width=True):
                 update_student_book_status(
-                    DB_PATH,
+                    DB_CONFIG,
                     int(profile["id"]),
                     book_id,
                     saved_for_later=not bool(status.get("saved_for_later")),
@@ -387,7 +387,7 @@ def student_page() -> None:
         with col2:
             if st.button(read_label, key=f"read_book_{book_id}", use_container_width=True):
                 update_student_book_status(
-                    DB_PATH,
+                    DB_CONFIG,
                     int(profile["id"]),
                     book_id,
                     saved_for_later=bool(status.get("saved_for_later")),
@@ -413,7 +413,7 @@ def story_learning_page() -> None:
         "Use a selected book to build a simple lesson connected to a school subject, then try a short quiz.",
         kicker="Lesson builder",
     )
-    books_df = fetch_all_books(DB_PATH)
+    books_df = fetch_all_books(DB_CONFIG)
     if books_df.empty:
         st.warning("No books are available yet. Please upload a catalog first.")
         return
@@ -424,7 +424,7 @@ def story_learning_page() -> None:
 
     recommended_books = [
         book for book in st.session_state.get("recommended_books", [])
-        if fetch_book_by_id(DB_PATH, book.get("id"))
+        if fetch_book_by_id(DB_CONFIG, book.get("id"))
     ]
     default_book_id = st.session_state.get("selected_book_id")
     recommended_ids = [book["id"] for book in recommended_books]
@@ -444,11 +444,11 @@ def story_learning_page() -> None:
             "Choose a book",
             options=selectable_ids,
             index=selectable_ids.index(default_book_id) if default_book_id in selectable_ids else 0,
-            format_func=lambda value: book_label(fetch_book_by_id(DB_PATH, value)),
+            format_func=lambda value: book_label(fetch_book_by_id(DB_CONFIG, value)),
         )
     st.session_state["selected_book_id"] = selected_book_id
 
-    book = fetch_book_by_id(DB_PATH, selected_book_id)
+    book = fetch_book_by_id(DB_CONFIG, selected_book_id)
     if not book:
         st.error("The selected book could not be loaded.")
         return
@@ -475,7 +475,7 @@ def story_learning_page() -> None:
             if session_id is None:
                 fallback_preferences = st.session_state.get("student_profile", {})
                 session_id = create_recommendation_session(
-                    DB_PATH,
+                    DB_CONFIG,
                     student_id=int(profile["id"]),
                     grade=fallback_preferences.get("grade", profile["grade"]),
                     preferences=fallback_preferences,
@@ -491,9 +491,9 @@ def story_learning_page() -> None:
             )
 
         lesson_text = lesson_sections_to_text(lesson["sections"])
-        log_selected_book(DB_PATH, session_id, selected_book_id, student_id=int(profile["id"]))
+        log_selected_book(DB_CONFIG, session_id, selected_book_id, student_id=int(profile["id"]))
         lesson_log_id = log_generated_lesson(
-            DB_PATH,
+            DB_CONFIG,
             student_id=int(profile["id"]),
             session_id=session_id,
             book_id=selected_book_id,
@@ -564,7 +564,7 @@ def story_learning_page() -> None:
                 st.session_state["last_quiz_result"] = quiz_result
                 if not st.session_state.get("quiz_saved"):
                     save_quiz_result(
-                        DB_PATH,
+                        DB_CONFIG,
                         student_id=int(profile["id"]),
                         book_id=selected_book_id,
                         lesson_log_id=latest_lesson.get("lesson_log_id"),
@@ -599,7 +599,7 @@ def story_learning_page() -> None:
 
         if feedback_submitted:
             save_feedback(
-                DB_PATH,
+                DB_CONFIG,
                 student_id=int(profile["id"]),
                 session_id=st.session_state.get("active_session_id"),
                 recommendation_useful=recommendation_useful == "Yes",
@@ -618,7 +618,7 @@ def dashboard_page() -> None:
         kicker="Project view",
     )
 
-    metrics = fetch_dashboard_metrics(DB_PATH)
+    metrics = fetch_dashboard_metrics(DB_CONFIG)
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total Uploads", metrics["total_uploads"])
     col2.metric("Total Books", metrics["total_books"])
@@ -644,7 +644,7 @@ def teacher_review_page() -> None:
         kicker="Teacher space",
     )
 
-    books_df = fetch_all_books(DB_PATH)
+    books_df = fetch_all_books(DB_CONFIG)
     if books_df.empty:
         st.warning("No books are available yet. Please upload a catalog first.")
         return
@@ -655,15 +655,15 @@ def teacher_review_page() -> None:
         "Select a book for review",
         options=books_df["id"].tolist(),
         index=books_df["id"].tolist().index(default_book_id) if default_book_id in books_df["id"].tolist() else 0,
-        format_func=lambda value: book_label(fetch_book_by_id(DB_PATH, value)),
+        format_func=lambda value: book_label(fetch_book_by_id(DB_CONFIG, value)),
     )
-    book = fetch_book_by_id(DB_PATH, selected_book_id)
+    book = fetch_book_by_id(DB_CONFIG, selected_book_id)
     if not book:
         st.error("The selected book could not be loaded.")
         return
 
     lesson_context = latest_lesson if latest_lesson and latest_lesson.get("book_id") == selected_book_id else None
-    saved_review = fetch_latest_reviewed_lesson(DB_PATH, selected_book_id)
+    saved_review = fetch_latest_reviewed_lesson(DB_CONFIG, selected_book_id)
 
     if lesson_context is None and saved_review:
         lesson_context = {
@@ -704,7 +704,7 @@ def teacher_review_page() -> None:
     with col1:
         if st.button("Save Reviewed Lesson", type="primary", use_container_width=True):
             save_reviewed_lesson(
-                DB_PATH,
+                DB_CONFIG,
                 book_id=selected_book_id,
                 subject=subject,
                 concept=concept,

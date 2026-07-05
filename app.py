@@ -938,7 +938,13 @@ def story_learning_page() -> None:
             concept=lesson.get("chosen_concept", selected_concept),
             generated_lesson=lesson_text,
         )
-        quiz_questions = generate_quiz_questions(book, lesson.get("chosen_concept", selected_concept), profile["class_grade"])
+        quiz_questions = generate_quiz_questions(
+            book,
+            subject,
+            lesson.get("chosen_concept", selected_concept),
+            profile["class_grade"],
+            lesson.get("fit_result", {}),
+        )
         st.session_state["latest_lesson"] = {
             "book_id": selected_book_id,
             "subject": subject,
@@ -951,6 +957,7 @@ def story_learning_page() -> None:
             "fit_result": lesson.get("fit_result", {}),
             "lesson_log_id": lesson_log_id,
             "quiz_questions": quiz_questions,
+            "mode": lesson.get("mode", "lesson"),
         }
         st.session_state["feedback_saved"] = False
         st.session_state["last_quiz_result"] = None
@@ -964,20 +971,25 @@ def story_learning_page() -> None:
         and latest_lesson.get("subject") == subject
         and latest_lesson.get("requested_concept") == selected_concept
     ):
-        render_section_heading("Your lesson", "Read the story connection first, then use the example and activity.")
+        lesson_mode = latest_lesson.get("mode", "lesson")
+        if lesson_mode == "fit_warning":
+            render_section_heading("Try a better concept", "This concept does not fit the book strongly enough for a full lesson yet.")
+        else:
+            render_section_heading("Your lesson", "Read the idea, examples, activity, and questions in order.")
         st.write(f"**Lesson concept:** {latest_lesson.get('concept', selected_concept)}")
 
         if latest_lesson["warning"]:
             st.warning(latest_lesson["warning"])
         elif not latest_lesson.get("fit_result", {}).get("is_strong", True):
-            suggested = latest_lesson.get("fit_result", {}).get("suggested_concept", "")
+            suggested = latest_lesson.get("fit_result", {}).get("suggested_concepts", [])
             if suggested:
-                st.info(f"A stronger concept may be: {suggested}")
+                st.info("Better concepts to try: " + ", ".join(suggested))
 
         with st.container(border=True):
             render_lesson_sections(latest_lesson["sections"])
 
-        st.info("This lesson can be reviewed by an admin before wider classroom use.")
+        if lesson_mode != "fit_warning":
+            st.info("This lesson can be reviewed by an admin before wider classroom use.")
 
         quiz_questions = latest_lesson.get("quiz_questions", [])
         if quiz_questions:

@@ -89,6 +89,65 @@ def inject_global_styles() -> None:
             margin-bottom: 1rem;
         }
 
+        .top-nav-shell {
+            display: flex;
+            justify-content: space-between;
+            gap: 1rem;
+            align-items: center;
+            padding: 1rem 1.1rem;
+            margin: 0.35rem 0 1rem 0;
+            border-radius: var(--radius-md);
+            border: 1px solid rgba(222, 205, 173, 0.95);
+            background: rgba(255, 255, 255, 0.82);
+            box-shadow: var(--shadow);
+        }
+
+        .top-nav-copy {
+            min-width: 0;
+        }
+
+        .top-nav-title {
+            font-family: 'Nunito', sans-serif;
+            font-size: 1.08rem;
+            font-weight: 800;
+            margin: 0;
+        }
+
+        .top-nav-subtitle {
+            color: var(--muted);
+            margin: 0.18rem 0 0 0;
+            font-size: 0.9rem;
+        }
+
+        .resume-banner {
+            padding: 1rem 1.05rem;
+            border-radius: 18px;
+            border: 1px solid rgba(235, 205, 154, 0.95);
+            background: linear-gradient(135deg, #fff8e5 0%, #fffdf6 55%, #eef7ff 100%);
+            margin-bottom: 1rem;
+        }
+
+        .resume-banner .label {
+            color: #8e6422;
+            font-size: 0.78rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            margin-bottom: 0.3rem;
+        }
+
+        .resume-banner .title {
+            font-family: 'Nunito', sans-serif;
+            font-size: 1.15rem;
+            font-weight: 800;
+            margin: 0 0 0.18rem 0;
+        }
+
+        .resume-banner .body {
+            color: var(--muted);
+            margin: 0;
+        }
+
         .brand-mark {
             display: inline-flex;
             align-items: center;
@@ -471,14 +530,7 @@ def render_sidebar_navigation(role: str, user_name: str) -> str:
     st.sidebar.markdown("## StoryShelf")
     st.sidebar.caption(f"Signed in as {user_name}")
     page_options = {
-        "student": [
-            "Home",
-            "My Dashboard",
-            "Find Books",
-            "Learn with a Book",
-        ],
         "admin": [
-            "Home",
             "Dashboard",
             "Lesson Review",
             "User Management",
@@ -508,11 +560,34 @@ def render_sidebar_navigation(role: str, user_name: str) -> str:
     st.session_state["pending_nav_page"] = None
     st.sidebar.markdown("---")
     flow_text = {
-        "student": "My Dashboard -> Find Books -> Learn with a Book -> Quiz",
         "admin": "Dashboard -> Lesson Review -> User Management -> Catalog Upload",
     }
-    st.sidebar.markdown(f"**Suggested flow**\n\n{flow_text.get(role, flow_text['student'])}")
+    st.sidebar.markdown(f"**Suggested flow**\n\n{flow_text.get(role, flow_text['admin'])}")
     return page
+
+
+def render_student_top_navigation(user_name: str, current_page: str) -> str | None:
+    st.markdown(
+        f"""
+        <div class="top-nav-shell">
+            <div class="top-nav-copy">
+                <p class="top-nav-title">StoryShelf student journey</p>
+                <p class="top-nav-subtitle">Signed in as {escape(user_name)}. Move from discovery to learning in one smooth flow.</p>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    nav_items = ["Discover Books", "My Books", "Learn", "My Progress", "Sign Out"]
+    columns = st.columns(len(nav_items))
+    clicked_page: str | None = None
+    for column, nav_item in zip(columns, nav_items):
+        with column:
+            button_type = "primary" if nav_item == current_page else "secondary"
+            if st.button(nav_item, key=f"top_nav_{nav_item.lower().replace(' ', '_')}", use_container_width=True, type=button_type):
+                clicked_page = nav_item
+    return clicked_page
 
 
 def render_progress_steps(steps: list[str], current_step: int) -> None:
@@ -521,6 +596,19 @@ def render_progress_steps(steps: list[str], current_step: int) -> None:
         chip_class = "done" if index < current_step else "current" if index == current_step else ""
         chips.append(f'<div class="progress-chip {chip_class}">{index}. {escape(step)}</div>')
     st.markdown(f'<div class="progress-wrap">{"".join(chips)}</div>', unsafe_allow_html=True)
+
+
+def render_resume_banner(title: str, body: str) -> None:
+    st.markdown(
+        f"""
+        <div class="resume-banner">
+            <div class="label">Continue where you left off</div>
+            <p class="title">{escape(title)}</p>
+            <p class="body">{escape(body)}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_metric_grid(items: list[dict[str, str]]) -> None:

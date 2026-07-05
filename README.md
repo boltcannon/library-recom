@@ -11,7 +11,7 @@ StoryShelf is a Streamlit app that helps schools upload a library catalog, recom
 - PostgreSQL-ready storage for production, with SQLite fallback for local development
 - Rule-based enrichment for length, reading level, genre, and subject tags
 - Student recommendation flow based on grade, topic, type, length, and reading level
-- Cleaner Streamlit UI with guided sidebar flow, recommendation cards, and lesson review sections
+- Cleaner Streamlit UI with student top navigation, guided discovery flow, recommendation cards, and lesson review sections
 - Story-based lesson generation with optional OpenAI support
 - Admin lesson review with editing, saving, and export
 - Database logging for recommendation sessions, selected books, lessons, and feedback
@@ -89,12 +89,12 @@ If the database is empty, the app still starts safely and shows clear guidance t
 - `Sign Up` creates a `student` account.
 - `Login` works for `student` and `admin` accounts.
 - If no admin exists yet, the auth screen also shows `Admin Sign Up`.
-- The sidebar only shows pages that match the logged-in user's role.
+- Students see a top app navigation and admins keep a focused sidebar.
 - Route access is checked in code as well, so changing `session_state` alone is not enough to unlock another role.
 
 ### Role access
 
-- `student`: My Dashboard, Find Books, Learn with a Book
+- `student`: Discover Books, My Books, Learn, My Progress
 - `admin`: Dashboard, Lesson Review, User Management, Catalog Upload
 
 ## First Admin Account Setup

@@ -56,9 +56,11 @@ from src.ui_helpers import (
     render_metric_grid,
     render_progress_steps,
     render_recommendation_card,
+    render_resume_banner,
     render_section_heading,
     render_sidebar_navigation,
     render_status_tip,
+    render_student_top_navigation,
 )
 from src.utils import book_label
 
@@ -67,12 +69,12 @@ LANGUAGE_OPTIONS = ["English", "Hindi", "Bilingual", "Other"]
 READING_LEVEL_OPTIONS = ["easy", "medium", "challenging"]
 LOGGER = logging.getLogger(__name__)
 
-STUDENT_HOME_PAGE = "Home"
-STUDENT_DASHBOARD_PAGE = "My Dashboard"
-STUDENT_RECOMMENDATIONS_PAGE = "Find Books"
-STUDENT_LESSON_PAGE = "Learn with a Book"
+STUDENT_DISCOVER_PAGE = "Discover Books"
+STUDENT_BOOKS_PAGE = "My Books"
+STUDENT_LEARN_PAGE = "Learn"
+STUDENT_PROGRESS_PAGE = "My Progress"
+STUDENT_SIGN_OUT = "Sign Out"
 
-ADMIN_HOME_PAGE = "Home"
 ADMIN_DASHBOARD_PAGE = "Dashboard"
 ADMIN_CATALOG_PAGE = "Catalog Upload"
 ADMIN_USERS_PAGE = "User Management"
@@ -119,7 +121,7 @@ def setup_page() -> None:
     st.session_state.setdefault("student_profile_record", None)
     st.session_state.setdefault("last_recommendation_signature", None)
     st.session_state.setdefault("auth_view", "login")
-    st.session_state.setdefault("nav_page", STUDENT_HOME_PAGE)
+    st.session_state.setdefault("nav_page", STUDENT_PROGRESS_PAGE)
     st.session_state.setdefault("pending_nav_page", None)
     st.session_state.setdefault(
         "finder_preferences",
@@ -178,7 +180,7 @@ def default_page_for_role(role: str) -> str:
     role = normalize_role(role)
     if role == "admin":
         return ADMIN_DASHBOARD_PAGE
-    return STUDENT_DASHBOARD_PAGE
+    return STUDENT_PROGRESS_PAGE
 
 
 def set_current_page(page: str) -> None:
@@ -192,7 +194,81 @@ def logout_user() -> None:
     setup_page()
     st.session_state["auth_user"] = None
     st.session_state["auth_view"] = auth_view
-    set_current_page(STUDENT_HOME_PAGE)
+    set_current_page(STUDENT_PROGRESS_PAGE)
+
+
+def get_student_resume_book(user_id: int) -> dict | None:
+    latest_lesson = st.session_state.get("latest_lesson")
+    if latest_lesson and latest_lesson.get("book_id"):
+        return fetch_book_by_id(DB_CONFIG, int(latest_lesson["book_id"]))
+
+    selected_book_id = st.session_state.get("selected_book_id")
+    if selected_book_id:
+        return fetch_book_by_id(DB_CONFIG, int(selected_book_id))
+
+    dashboard = fetch_student_dashboard_data_for_user(DB_CONFIG, user_id)
+    if dashboard.get("last_selected_book_id"):
+        return fetch_book_by_id(DB_CONFIG, int(dashboard["last_selected_book_id"]))
+    if dashboard.get("last_lesson_book_id"):
+        return fetch_book_by_id(DB_CONFIG, int(dashboard["last_lesson_book_id"]))
+
+    return None
+
+
+def render_student_journey_header(
+    *,
+    user: dict,
+    current_page: str,
+    title: str,
+    body: str,
+    kicker: str,
+) -> None:
+    render_brand_header("student")
+    clicked_page = render_student_top_navigation(str(user.get("full_name") or "Student"), current_page)
+    if clicked_page == STUDENT_SIGN_OUT:
+        logout_user()
+        st.rerun()
+    if clicked_page and clicked_page != current_page:
+        set_current_page(clicked_page)
+        st.rerun()
+
+    dashboard = fetch_student_dashboard_data_for_user(DB_CONFIG, int(user["id"]))
+    has_profile = fetch_student_profile_for_user(DB_CONFIG, int(user["id"])) is not None
+    has_lesson = dashboard.get("total_lessons_generated", 0) > 0 or bool(st.session_state.get("latest_lesson"))
+    has_quiz = dashboard.get("quiz_attempts", 0) > 0 or st.session_state.get("last_quiz_result") is not None
+
+    step_lookup = {
+        STUDENT_DISCOVER_PAGE: 2,
+        STUDENT_BOOKS_PAGE: 2,
+        STUDENT_LEARN_PAGE: 3 if not has_quiz else 4,
+        STUDENT_PROGRESS_PAGE: 4 if has_quiz else 3,
+    }
+    current_step = step_lookup.get(current_page, 1)
+    if not has_profile:
+        current_step = 1
+    elif has_quiz and current_page == STUDENT_PROGRESS_PAGE:
+        current_step = 5
+    elif current_page == STUDENT_PROGRESS_PAGE and has_lesson:
+        current_step = 4
+
+    render_hero(title, body, kicker=kicker)
+    render_progress_steps(
+        ["Profile", "Find Book", "Learn", "Quiz", "Progress"],
+        current_step,
+    )
+
+    resume_book = get_student_resume_book(int(user["id"]))
+    if resume_book and current_page != STUDENT_LEARN_PAGE:
+        resume_title = str(resume_book.get("title") or "Your selected book")
+        if st.session_state.get("latest_lesson"):
+            resume_body = "Your lesson is already prepared. Open Learn to keep going with the lesson and quiz."
+        else:
+            resume_body = "You already picked a book. Open Learn to continue from the same story."
+        render_resume_banner(resume_title, resume_body)
+        if st.button("Continue Learning", key=f"continue_learning_{current_page.lower().replace(' ', '_')}", type="primary", use_container_width=False):
+            st.session_state["selected_book_id"] = int(resume_book["id"])
+            set_current_page(STUDENT_LEARN_PAGE)
+            st.rerun()
 
 
 def enforce_role(required_roles: set[str]) -> dict | None:
@@ -349,7 +425,7 @@ def require_student_profile() -> dict | None:
         return {**cached_profile, "id": int(user["id"]), "full_name": user.get("full_name", "")}
     profile = fetch_student_profile_for_user(DB_CONFIG, int(user["id"]))
     if not profile:
-        st.info("Complete your profile in My Dashboard before continuing.")
+        st.info("Complete your profile in My Progress before continuing.")
         return None
     st.session_state["student_profile_record"] = profile
     st.session_state["student_profile"] = {
@@ -473,7 +549,7 @@ def home_page() -> None:
             render_section_heading("Continue your reading adventure", "Move through the app like a guided journey instead of a big form.")
             render_status_tip(
                 "Suggested path",
-                "Start in My Dashboard, then visit Find Books, and finish in Learn with a Book.",
+                "Start in My Progress, then visit Discover Books, save a title in My Books, and finish in Learn.",
             )
             if dashboard["favorite_topics"]:
                 render_status_tip("Favorite topics", dashboard["favorite_topics"])
@@ -545,11 +621,12 @@ def student_dashboard_page() -> None:
     user = enforce_role({"student"})
     if not user:
         return
-    render_brand_header("student")
-    render_hero(
-        "My Dashboard",
-        "Keep your profile up to date, track your reading, and continue your next story-powered lesson.",
-        kicker="Student dashboard",
+    render_student_journey_header(
+        user=user,
+        current_page=STUDENT_PROGRESS_PAGE,
+        title="My Progress",
+        body="See your reading journey, update your profile, and continue the next step without hunting across pages.",
+        kicker="Student progress",
     )
     render_student_profile_manager()
     profile = require_student_profile()
@@ -562,7 +639,7 @@ def student_dashboard_page() -> None:
             {"label": "Books explored", "value": str(dashboard["total_books_explored"]), "note": "Books you visited or selected"},
             {"label": "Saved books", "value": str(dashboard["total_books_saved"]), "note": "Stories saved for later"},
             {"label": "Books read", "value": str(dashboard["total_books_marked_as_read"]), "note": "Books you marked as read"},
-            {"label": "Lessons generated", "value": str(dashboard["total_lessons_generated"]), "note": "Story lessons made from your books"},
+            {"label": "Lessons completed", "value": str(dashboard["total_lessons_generated"]), "note": "Story lessons created from your books"},
         ]
     )
 
@@ -571,46 +648,139 @@ def student_dashboard_page() -> None:
         render_status_tip("Favorite topics", dashboard["favorite_topics"] or "Add favorite topics to help StoryShelf suggest better matches.")
     with col2:
         render_status_tip(
-            "Next step",
-            "Go to Find Books for fresh recommendations, or open Learn with a Book if you already picked one.",
+            "Quiz performance",
+            (
+                f"{dashboard['quiz_attempts']} quiz attempts with an average score of {dashboard['quiz_average_percent']}%"
+                if dashboard.get("quiz_average_percent") is not None
+                else "Generate a lesson and try the quiz to start building your learning score."
+            ),
         )
 
-    render_section_heading("Recent activity", "These are the newest things you did in the app.")
+    render_section_heading("Recent activity", "These are the newest things you did across reading, lessons, and quiz practice.")
     if dashboard["recent_activity"].empty:
-        render_empty_state("No activity yet", "Start by saving your profile and asking StoryShelf to suggest a book.", "📖")
+        render_empty_state("No progress yet", "Save your profile and discover a book to begin your StoryShelf journey.", "📖")
+        if st.button("Discover Books", key="progress_empty_discover", type="primary", use_container_width=True):
+            set_current_page(STUDENT_DISCOVER_PAGE)
+            st.rerun()
     else:
         st.dataframe(dashboard["recent_activity"], use_container_width=True, hide_index=True)
 
-    render_section_heading("Your history", "Browse your reading trail, recommendations, selected books, and lessons.")
-    history_tabs = st.tabs(["Reading History", "Recommended Books", "Selected Books", "Generated Lessons"])
+    render_section_heading("Your history", "Browse your reading trail, recommendations, selected books, lessons, and quiz results.")
+    history_tabs = st.tabs(["Reading History", "Recommended Books", "Selected Books", "Generated Lessons", "Quiz History"])
     history_frames = [
-        dashboard["reading_history"],
+        dashboard["reading_history"].drop(columns=["book_id"], errors="ignore"),
         dashboard["recommended_history"],
-        dashboard["selected_history"],
-        dashboard["lesson_history"],
+        dashboard["selected_history"].drop(columns=["book_id"], errors="ignore"),
+        dashboard["lesson_history"].drop(columns=["book_id"], errors="ignore"),
+        dashboard["quiz_history"].drop(columns=["book_id"], errors="ignore"),
     ]
     empty_messages = [
         "No saved or finished books yet.",
         "No recommendation history yet.",
         "No chosen books yet.",
         "No lessons yet.",
+        "No quiz history yet.",
     ]
     for tab, frame, message in zip(history_tabs, history_frames, empty_messages):
         with tab:
             if frame.empty:
                 st.info(message)
+                if message == "No saved or finished books yet.":
+                    if st.button("Find Books", key="history_empty_reading", type="primary", use_container_width=True):
+                        set_current_page(STUDENT_DISCOVER_PAGE)
+                        st.rerun()
+                elif message == "No recommendation history yet.":
+                    if st.button("Start Discovering", key="history_empty_recommendations", type="primary", use_container_width=True):
+                        set_current_page(STUDENT_DISCOVER_PAGE)
+                        st.rerun()
+                elif message == "No chosen books yet.":
+                    if st.button("Open My Books", key="history_empty_selected", type="primary", use_container_width=True):
+                        set_current_page(STUDENT_BOOKS_PAGE)
+                        st.rerun()
+                elif message == "No lessons yet.":
+                    if st.button("Go to Learn", key="history_empty_lessons", type="primary", use_container_width=True):
+                        set_current_page(STUDENT_LEARN_PAGE)
+                        st.rerun()
+                elif message == "No quiz history yet.":
+                    if st.button("Start a Quiz", key="history_empty_quiz", type="primary", use_container_width=True):
+                        set_current_page(STUDENT_LEARN_PAGE)
+                        st.rerun()
             else:
                 st.dataframe(frame, use_container_width=True, hide_index=True)
+
+
+def my_books_page() -> None:
+    user = enforce_role({"student"})
+    if not user:
+        return
+    render_student_journey_header(
+        user=user,
+        current_page=STUDENT_BOOKS_PAGE,
+        title="My Books",
+        body="Keep your saved books, finished books, and next reading choice together in one calm place.",
+        kicker="Student library",
+    )
+    profile = require_student_profile()
+    if not profile:
+        return
+
+    dashboard = fetch_student_dashboard_data_for_user(DB_CONFIG, int(user["id"]))
+    reading_history = dashboard["reading_history"].copy()
+    if reading_history.empty:
+        render_empty_state("No saved books yet", "Save a book from Discover Books and it will show up here for quick access later.", "📚")
+        if st.button("Go to Discover Books", key="my_books_empty_discover", type="primary", use_container_width=True):
+            set_current_page(STUDENT_DISCOVER_PAGE)
+            st.rerun()
+        return
+
+    selected_book_id = st.session_state.get("selected_book_id")
+    if selected_book_id:
+        selected_book = fetch_book_by_id(DB_CONFIG, int(selected_book_id))
+        if selected_book:
+            render_resume_banner(
+                str(selected_book.get("title") or "Your selected book"),
+                "This book is already waiting for you in Learn.",
+            )
+
+    saved_books = reading_history[reading_history["status"].isin(["saved", "saved_read"])] if "status" in reading_history.columns else pd.DataFrame()
+    finished_books = reading_history[reading_history["status"].isin(["read", "saved_read"])] if "status" in reading_history.columns else pd.DataFrame()
+
+    render_section_heading("Saved for later", "These are the books you kept for your next reading session.")
+    if saved_books.empty:
+        render_empty_state("No saved books", "Save a book from Discover Books to build your own shelf.", "📚")
+    else:
+        for _, row in saved_books.iterrows():
+            with st.container(border=True):
+                st.markdown(f"### {row.get('title', 'Untitled book')}")
+                st.caption(f"by {row.get('author', 'Unknown author')}")
+                status_text = "Marked as read too" if str(row.get("status", "")) == "saved_read" else "Saved for later"
+                st.write(status_text)
+                if st.button("Open in Learn", key=f"open_saved_book_{int(row['book_id'])}", type="primary", use_container_width=True):
+                    st.session_state["selected_book_id"] = int(row["book_id"])
+                    set_current_page(STUDENT_LEARN_PAGE)
+                    st.rerun()
+
+    if saved_books.empty:
+        if st.button("Discover More Books", key="my_books_no_saved_action", type="primary", use_container_width=True):
+            set_current_page(STUDENT_DISCOVER_PAGE)
+            st.rerun()
+
+    render_section_heading("Finished books", "Look back at the books you already completed or used in learning.")
+    if finished_books.empty:
+        render_empty_state("No read books yet", "Mark a book as read after finishing it and it will show up here.", "📘")
+    else:
+        st.dataframe(finished_books.drop(columns=["book_id"], errors="ignore"), use_container_width=True, hide_index=True)
 
 
 def student_page() -> None:
     user = enforce_role({"student"})
     if not user:
         return
-    render_brand_header("student")
-    render_hero(
-        "Find Books",
-        "Answer a few simple questions and let StoryShelf suggest books that fit your interests.",
+    render_student_journey_header(
+        user=user,
+        current_page=STUDENT_DISCOVER_PAGE,
+        title="Discover Books",
+        body="Answer a few simple questions and StoryShelf will suggest books that fit your interests, comfort level, and favorite topics.",
         kicker="Student journey",
     )
     books_df = fetch_all_books(DB_CONFIG)
@@ -742,6 +912,7 @@ def student_page() -> None:
             int(user["id"]),
             tuple(sorted((str(key), str(value)) for key, value in preferences.items())),
         )
+        refreshed_recommendations = False
         if (
             st.session_state.get("last_recommendation_signature") == recommendation_signature
             and st.session_state.get("recommended_books")
@@ -763,6 +934,7 @@ def student_page() -> None:
                 preferences=preferences,
                 recommended_books=recommendation_records,
             )
+            refreshed_recommendations = True
         st.session_state["student_profile"] = {
             "name": profile["full_name"],
             "grade": profile["class_grade"],
@@ -770,11 +942,12 @@ def student_page() -> None:
             "favorite_topics": profile.get("favorite_topics", ""),
             "reading_level": profile.get("reading_level", ""),
         }
-        st.session_state["latest_lesson"] = None
-        st.session_state["feedback_saved"] = False
-        st.session_state["selected_book_id"] = None
-        st.session_state["last_quiz_result"] = None
-        st.session_state["quiz_saved"] = False
+        if refreshed_recommendations:
+            st.session_state["latest_lesson"] = None
+            st.session_state["feedback_saved"] = False
+            st.session_state["selected_book_id"] = None
+            st.session_state["last_quiz_result"] = None
+            st.session_state["quiz_saved"] = False
 
         if not recommendation_records:
             st.warning("No close match yet. Try broader choices such as Any, or use fewer topic words.")
@@ -819,12 +992,12 @@ def student_page() -> None:
         with col3:
             if st.button("Read with this book", key=f"use_book_{book_id}", type="primary", use_container_width=True):
                 st.session_state["selected_book_id"] = book_id
-                set_current_page(STUDENT_LESSON_PAGE)
+                set_current_page(STUDENT_LEARN_PAGE)
                 st.rerun()
 
     options = {book["id"]: book_label(book) for book in recommended_books}
     with st.container(border=True):
-        render_section_heading("Keep one book ready", "Choose one book to carry into Learn with a Book whenever you are ready.")
+        render_section_heading("Keep one book ready", "Choose one book to carry into Learn whenever you are ready.")
         selected_book_id = st.selectbox(
             "Pick a book to continue",
             options=list(options.keys()),
@@ -832,17 +1005,18 @@ def student_page() -> None:
             key="finder_selected_book_id",
         )
         st.session_state["selected_book_id"] = selected_book_id
-        st.success("Next step: open Learn with a Book to turn this story into a lesson and quiz.")
+        st.success("Next step: open Learn to turn this story into a lesson and quiz.")
 
 
 def story_learning_page() -> None:
     user = enforce_role({"student"})
     if not user:
         return
-    render_brand_header("student")
-    render_hero(
-        "Learn with a Book",
-        "Turn a selected book into a simple lesson connected to a school subject, then try a short quiz.",
+    render_student_journey_header(
+        user=user,
+        current_page=STUDENT_LEARN_PAGE,
+        title="Learn",
+        body="Turn a selected book into a simple lesson connected to a school subject, then try a short quiz.",
         kicker="Lesson builder",
     )
     books_df = fetch_all_books(DB_CONFIG)
@@ -867,9 +1041,15 @@ def story_learning_page() -> None:
         help_text = "You are using books from the current recommendation session."
     else:
         selectable_ids = books_df["id"].tolist()
-        help_text = "No recommendation session is active, so you can choose any book in the catalog."
+        help_text = "Choose a saved or recommended book first if you want a smoother learning journey."
 
     render_status_tip("Book source", help_text)
+    if not recommended_ids and not st.session_state.get("selected_book_id"):
+        render_empty_state("No lesson yet", "Pick a book from Discover Books or My Books first, then come back here to build a lesson.", "🧠")
+        if st.button("Discover a Book", key="learn_empty_discover", type="primary", use_container_width=True):
+            set_current_page(STUDENT_DISCOVER_PAGE)
+            st.rerun()
+        return
 
     left_col, right_col = st.columns([1.15, 1])
     with left_col:
@@ -1032,6 +1212,8 @@ def story_learning_page() -> None:
                         st.write(f"**Your answer:** {item['selected_answer']}")
                         st.write(f"**Correct answer:** {item['correct_answer']}")
                         st.write(item["feedback"])
+        elif lesson_mode != "fit_warning":
+            render_empty_state("No quiz yet", "Try a stronger concept match to unlock a more complete quiz for this book.", "📝")
 
         render_section_heading("Quick feedback", "A little feedback helps improve the next lesson.")
         if st.session_state.get("feedback_saved"):
@@ -1237,7 +1419,7 @@ def admin_lesson_review_page() -> None:
         }
 
     if lesson_context is None:
-        render_empty_state("No lesson to review yet", "Create a lesson from Learn with a Book first, then come here to review and save it.", "🪄")
+        render_empty_state("No lesson to review yet", "Create a lesson from Learn first, then come here to review and save it.", "🪄")
         return
 
     render_section_heading(book["title"] or "Untitled Book", "Review the source book first, then compare the generated lesson with the edited version.")
@@ -1307,15 +1489,18 @@ def main() -> None:
         st.rerun()
         return
 
-    page = render_sidebar_navigation(role, str(user.get("full_name", "User")))
-    if st.sidebar.button("Log Out", use_container_width=True):
-        logout_user()
-        st.rerun()
-        return
+    if role == "admin":
+        page = render_sidebar_navigation(role, str(user.get("full_name", "User")))
+        if st.sidebar.button("Log Out", use_container_width=True):
+            logout_user()
+            st.rerun()
+            return
+    else:
+        page = st.session_state.get("nav_page", default_page_for_role(role))
 
     allowed_pages = {
-        "student": {STUDENT_HOME_PAGE, STUDENT_DASHBOARD_PAGE, STUDENT_RECOMMENDATIONS_PAGE, STUDENT_LESSON_PAGE},
-        "admin": {ADMIN_HOME_PAGE, ADMIN_DASHBOARD_PAGE, ADMIN_USERS_PAGE, ADMIN_CATALOG_PAGE, ADMIN_LESSON_REVIEW_PAGE},
+        "student": {STUDENT_DISCOVER_PAGE, STUDENT_BOOKS_PAGE, STUDENT_LEARN_PAGE, STUDENT_PROGRESS_PAGE},
+        "admin": {ADMIN_DASHBOARD_PAGE, ADMIN_USERS_PAGE, ADMIN_CATALOG_PAGE, ADMIN_LESSON_REVIEW_PAGE},
     }
     if page not in allowed_pages.get(role, set()):
         st.error("That page is not available for your role.")
@@ -1323,15 +1508,15 @@ def main() -> None:
         st.rerun()
         return
 
-    if page == STUDENT_HOME_PAGE:
-        home_page()
-    elif page == STUDENT_DASHBOARD_PAGE:
+    if page == STUDENT_PROGRESS_PAGE:
         student_dashboard_page()
-    elif page == STUDENT_RECOMMENDATIONS_PAGE:
+    elif page == STUDENT_DISCOVER_PAGE:
         student_page()
+    elif page == STUDENT_BOOKS_PAGE:
+        my_books_page()
     elif page == ADMIN_CATALOG_PAGE:
         admin_page()
-    elif page == STUDENT_LESSON_PAGE:
+    elif page == STUDENT_LEARN_PAGE:
         story_learning_page()
     elif page == ADMIN_DASHBOARD_PAGE:
         admin_dashboard_page()

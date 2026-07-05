@@ -1716,6 +1716,22 @@ def fetch_student_dashboard_data_for_user(config: DatabaseConfig, user_id: int) 
         "SELECT COUNT(*) AS count FROM generated_lessons WHERE student_id = %s",
         (user_id,),
     )
+    quiz_stats_row = fetch_one(
+        config,
+        """
+        SELECT
+            COUNT(*) AS attempt_count,
+            AVG(
+                CASE
+                    WHEN total_questions > 0 THEN (score * 100.0 / total_questions)
+                    ELSE NULL
+                END
+            ) AS avg_percent
+        FROM quiz_results
+        WHERE student_id = %s
+        """,
+        (user_id,),
+    )
     profile_row = fetch_one(
         config,
         "SELECT favorite_topics FROM student_profiles WHERE user_id = %s",
@@ -1754,6 +1770,25 @@ def fetch_student_dashboard_data_for_user(config: DatabaseConfig, user_id: int) 
             JOIN books ON books.id = gl.book_id
             WHERE gl.student_id = %s
             ORDER BY gl.created_at DESC, gl.id DESC
+            LIMIT 20
+            """,
+            (user_id,),
+        )
+    )
+    quiz_history = pd.DataFrame(
+        fetch_all(
+            config,
+            """
+            SELECT
+                qr.book_id,
+                qr.created_at,
+                books.title,
+                qr.score,
+                qr.total_questions
+            FROM quiz_results qr
+            JOIN books ON books.id = qr.book_id
+            WHERE qr.student_id = %s
+            ORDER BY qr.created_at DESC, qr.id DESC
             LIMIT 20
             """,
             (user_id,),
@@ -1808,7 +1843,25 @@ def fetch_student_dashboard_data_for_user(config: DatabaseConfig, user_id: int) 
                 "created_at": row.get("completed_at") or row.get("opened_at"),
             }
         )
+    for _, row in lesson_history.head(5).iterrows():
+        recent_activity_rows.append(
+            {
+                "activity_type": "Lesson",
+                "description": f"Generated a {row.get('subject', 'story')} lesson for {row.get('title', 'a book')}",
+                "created_at": row.get("created_at"),
+            }
+        )
+    for _, row in quiz_history.head(5).iterrows():
+        recent_activity_rows.append(
+            {
+                "activity_type": "Quiz",
+                "description": f"Scored {row.get('score', 0)}/{row.get('total_questions', 0)} on {row.get('title', 'a book')}",
+                "created_at": row.get("created_at"),
+            }
+        )
     recent_activity = pd.DataFrame(recent_activity_rows)
+    if not recent_activity.empty and "created_at" in recent_activity.columns:
+        recent_activity = recent_activity.sort_values(by="created_at", ascending=False).head(10).reset_index(drop=True)
 
     recommended_rows: list[dict[str, Any]] = []
     explored_ids: set[int] = set()
@@ -1828,6 +1881,9 @@ def fetch_student_dashboard_data_for_user(config: DatabaseConfig, user_id: int) 
                     "author": item.get("author", "Unknown author"),
                 }
             )
+    last_selected_book_id = int(selected_history.iloc[0]["book_id"]) if not selected_history.empty and "book_id" in selected_history.columns else None
+    last_lesson_book_id = int(lesson_history.iloc[0]["book_id"]) if not lesson_history.empty and "book_id" in lesson_history.columns else None
+
     if not reading_history.empty and "book_id" in reading_history.columns:
         explored_ids.update(int(book_id) for book_id in reading_history["book_id"].dropna().tolist())
     if not selected_history.empty and "book_id" in selected_history.columns:
@@ -1836,20 +1892,22 @@ def fetch_student_dashboard_data_for_user(config: DatabaseConfig, user_id: int) 
         explored_ids.update(int(book_id) for book_id in lesson_history["book_id"].dropna().tolist())
 
     recommended_history = pd.DataFrame(recommended_rows).head(20)
-    for frame in (reading_history, selected_history, lesson_history):
-        if not frame.empty and "book_id" in frame.columns:
-            frame.drop(columns=["book_id"], inplace=True)
 
     return {
         "total_books_explored": len(explored_ids),
         "total_books_saved": int(books_saved_row["count"]) if books_saved_row else 0,
         "total_books_marked_as_read": int(books_read_row["count"]) if books_read_row else 0,
         "total_lessons_generated": int(lessons_generated_row["count"]) if lessons_generated_row else 0,
+        "quiz_attempts": int(quiz_stats_row["attempt_count"]) if quiz_stats_row and quiz_stats_row.get("attempt_count") is not None else 0,
+        "quiz_average_percent": round(float(quiz_stats_row["avg_percent"]), 1) if quiz_stats_row and quiz_stats_row.get("avg_percent") is not None else None,
         "favorite_topics": profile_row["favorite_topics"] if profile_row and profile_row.get("favorite_topics") else "",
+        "last_selected_book_id": last_selected_book_id,
+        "last_lesson_book_id": last_lesson_book_id,
         "recent_activity": recent_activity,
         "recommended_history": recommended_history,
         "selected_history": selected_history,
         "lesson_history": lesson_history,
+        "quiz_history": quiz_history,
         "reading_history": reading_history,
     }
 

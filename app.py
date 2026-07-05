@@ -120,6 +120,7 @@ def setup_page() -> None:
     st.session_state.setdefault("last_recommendation_signature", None)
     st.session_state.setdefault("auth_view", "login")
     st.session_state.setdefault("nav_page", STUDENT_HOME_PAGE)
+    st.session_state.setdefault("pending_nav_page", None)
     st.session_state.setdefault(
         "finder_preferences",
         {
@@ -182,7 +183,7 @@ def default_page_for_role(role: str) -> str:
 
 def set_current_page(page: str) -> None:
     st.session_state["nav_page"] = page
-    st.session_state["sidebar_nav_page"] = page
+    st.session_state["pending_nav_page"] = page
 
 
 def logout_user() -> None:

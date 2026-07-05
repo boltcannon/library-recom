@@ -486,13 +486,17 @@ def render_sidebar_navigation(role: str, user_name: str) -> str:
         ],
     }
     current_options = page_options.get(role, ["Home"])
+    pending_page = st.session_state.get("pending_nav_page")
+    if pending_page in current_options:
+        st.session_state["nav_page"] = pending_page
     current_page = st.session_state.get("nav_page", current_options[0])
     if current_page not in current_options:
         st.session_state["nav_page"] = current_options[0]
+        current_page = current_options[0]
 
     sidebar_key = "sidebar_nav_page"
-    if st.session_state.get(sidebar_key) not in current_options:
-        st.session_state[sidebar_key] = st.session_state["nav_page"]
+    if st.session_state.get(sidebar_key) not in current_options or pending_page in current_options:
+        st.session_state[sidebar_key] = current_page
 
     page = st.sidebar.radio(
         "Open a page",
@@ -501,6 +505,7 @@ def render_sidebar_navigation(role: str, user_name: str) -> str:
         label_visibility="collapsed",
     )
     st.session_state["nav_page"] = page
+    st.session_state["pending_nav_page"] = None
     st.sidebar.markdown("---")
     flow_text = {
         "student": "My Dashboard -> Find Books -> Learn with a Book -> Quiz",

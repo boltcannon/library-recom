@@ -161,13 +161,18 @@ def default_page_for_role(role: str) -> str:
     return "Student Dashboard"
 
 
+def set_current_page(page: str) -> None:
+    st.session_state["nav_page"] = page
+    st.session_state["sidebar_nav_page"] = page
+
+
 def logout_user() -> None:
     auth_view = st.session_state.get("auth_view", "login")
     st.session_state.clear()
     setup_page()
     st.session_state["auth_user"] = None
     st.session_state["auth_view"] = auth_view
-    st.session_state["nav_page"] = "Home"
+    set_current_page("Home")
 
 
 def enforce_role(required_roles: set[str]) -> dict | None:
@@ -181,7 +186,7 @@ def enforce_role(required_roles: set[str]) -> dict | None:
     normalized_required_roles = {normalize_role(item) for item in required_roles}
     if normalized_role not in normalized_required_roles:
         st.error("You do not have access to this section.")
-        st.session_state["nav_page"] = default_page_for_role(normalized_role)
+        set_current_page(default_page_for_role(normalized_role))
         return None
     return user
 
@@ -231,7 +236,7 @@ def render_auth_page() -> None:
                     st.error("Invalid email or password.")
                 else:
                     st.session_state["auth_user"] = user
-                    st.session_state["nav_page"] = default_page_for_role(str(user.get("role", "student")))
+                    set_current_page(default_page_for_role(str(user.get("role", "student"))))
                     reset_student_learning_state()
                     st.rerun()
     elif selected_view == "Sign Up":
@@ -260,7 +265,7 @@ def render_auth_page() -> None:
                     else:
                         user_id = create_user(DB_CONFIG, full_name=full_name, email=email, password=password, role="student")
                         st.session_state["auth_user"] = fetch_user_by_id(DB_CONFIG, user_id)
-                        st.session_state["nav_page"] = default_page_for_role("student")
+                        set_current_page(default_page_for_role("student"))
                         reset_student_learning_state()
                         st.success("Your student account is ready.")
                         st.rerun()
@@ -293,7 +298,7 @@ def render_auth_page() -> None:
                         user_id = create_user(DB_CONFIG, full_name=full_name, email=email, password=password, role="admin")
                         st.session_state["auth_user"] = fetch_user_by_id(DB_CONFIG, user_id)
                         st.session_state["auth_view"] = "login"
-                        st.session_state["nav_page"] = default_page_for_role("admin")
+                        set_current_page(default_page_for_role("admin"))
                         reset_student_learning_state()
                         st.success("Your admin account is ready.")
                         st.rerun()
@@ -344,60 +349,72 @@ def render_student_profile_manager() -> None:
 
     render_section_heading("Student profile", "This helps the app remember how you like to read.")
     with st.container(border=True):
-        with st.form("student_profile_form"):
-            name = st.text_input("Student name", value=current_profile.get("name", ""))
-            grade = st.selectbox(
-                "Class / grade",
-                [str(level) for level in range(1, 13)],
-                index=max(0, [str(level) for level in range(1, 13)].index(str(current_profile.get("grade", "4"))) if str(current_profile.get("grade", "4")) in [str(level) for level in range(1, 13)] else 3),
+        if profile:
+            render_status_tip(
+                "Saved profile",
+                f"Grade {current_profile['grade']} | {current_profile['preferred_language']} | {current_profile['reading_level']} reading",
             )
-            preferred_language = st.selectbox(
-                "Preferred language",
-                LANGUAGE_OPTIONS,
-                index=LANGUAGE_OPTIONS.index(current_profile.get("preferred_language", "English")) if current_profile.get("preferred_language", "English") in LANGUAGE_OPTIONS else 0,
-            )
-            favorite_topics = st.text_input(
-                "Favorite topics",
-                value=current_profile.get("favorite_topics", ""),
-                placeholder="animals, science, friendship, space",
-            )
-            reading_level = st.selectbox(
-                "Reading comfort level",
-                READING_LEVEL_OPTIONS,
-                index=READING_LEVEL_OPTIONS.index(current_profile.get("reading_level", "easy")) if current_profile.get("reading_level", "easy") in READING_LEVEL_OPTIONS else 0,
-            )
-            saved = st.form_submit_button("Save Student Profile", type="primary", use_container_width=True)
+            if current_profile.get("favorite_topics", "").strip():
+                st.caption(f"Favorite topics: {current_profile['favorite_topics']}")
+            profile_container = st.expander("Edit student profile", expanded=False)
+        else:
+            profile_container = st.container()
 
-        if saved:
-            if not name.strip():
-                st.error("Please enter the student's name.")
-            else:
-                save_student_profile_for_user(
-                    DB_CONFIG,
-                    user_id=int(user["id"]),
-                    full_name=name,
-                    class_grade=grade,
-                    preferred_language=preferred_language,
-                    favorite_topics=favorite_topics,
-                    reading_level=reading_level,
+        with profile_container:
+            with st.form("student_profile_form"):
+                name = st.text_input("Student name", value=current_profile.get("name", ""))
+                grade = st.selectbox(
+                    "Class / grade",
+                    [str(level) for level in range(1, 13)],
+                    index=max(0, [str(level) for level in range(1, 13)].index(str(current_profile.get("grade", "4"))) if str(current_profile.get("grade", "4")) in [str(level) for level in range(1, 13)] else 3),
                 )
-                st.session_state["auth_user"] = {**user, "full_name": name.strip()}
-                st.session_state["student_profile_record"] = {
-                    "user_id": int(user["id"]),
-                    "class_grade": grade,
-                    "preferred_language": preferred_language,
-                    "favorite_topics": favorite_topics.strip(),
-                    "reading_level": reading_level,
-                }
-                st.session_state["student_profile"] = {
-                    "name": name.strip(),
-                    "grade": grade,
-                    "preferred_language": preferred_language,
-                    "favorite_topics": favorite_topics.strip(),
-                    "reading_level": reading_level,
-                }
-                reset_student_learning_state()
-                st.success("Student profile saved.")
+                preferred_language = st.selectbox(
+                    "Preferred language",
+                    LANGUAGE_OPTIONS,
+                    index=LANGUAGE_OPTIONS.index(current_profile.get("preferred_language", "English")) if current_profile.get("preferred_language", "English") in LANGUAGE_OPTIONS else 0,
+                )
+                favorite_topics = st.text_input(
+                    "Favorite topics",
+                    value=current_profile.get("favorite_topics", ""),
+                    placeholder="animals, science, friendship, space",
+                )
+                reading_level = st.selectbox(
+                    "Reading comfort level",
+                    READING_LEVEL_OPTIONS,
+                    index=READING_LEVEL_OPTIONS.index(current_profile.get("reading_level", "easy")) if current_profile.get("reading_level", "easy") in READING_LEVEL_OPTIONS else 0,
+                )
+                saved = st.form_submit_button("Save Student Profile", type="primary", use_container_width=True)
+
+            if saved:
+                if not name.strip():
+                    st.error("Please enter the student's name.")
+                else:
+                    save_student_profile_for_user(
+                        DB_CONFIG,
+                        user_id=int(user["id"]),
+                        full_name=name,
+                        class_grade=grade,
+                        preferred_language=preferred_language,
+                        favorite_topics=favorite_topics,
+                        reading_level=reading_level,
+                    )
+                    st.session_state["auth_user"] = {**user, "full_name": name.strip()}
+                    st.session_state["student_profile_record"] = {
+                        "user_id": int(user["id"]),
+                        "class_grade": grade,
+                        "preferred_language": preferred_language,
+                        "favorite_topics": favorite_topics.strip(),
+                        "reading_level": reading_level,
+                    }
+                    st.session_state["student_profile"] = {
+                        "name": name.strip(),
+                        "grade": grade,
+                        "preferred_language": preferred_language,
+                        "favorite_topics": favorite_topics.strip(),
+                        "reading_level": reading_level,
+                    }
+                    reset_student_learning_state()
+                    st.success("Student profile saved.")
 
 
 def home_page() -> None:
@@ -767,7 +784,7 @@ def student_page() -> None:
         with col3:
             if st.button("Read with this book", key=f"use_book_{book_id}", type="primary", use_container_width=True):
                 st.session_state["selected_book_id"] = book_id
-                st.session_state["nav_page"] = "Story-Based Learning"
+                set_current_page("Story-Based Learning")
                 st.rerun()
 
     options = {book["id"]: book_label(book) for book in recommended_books}
@@ -1249,7 +1266,7 @@ def main() -> None:
     }
     if page not in allowed_pages.get(role, set()):
         st.error("That page is not available for your role.")
-        st.session_state["nav_page"] = default_page_for_role(role)
+        set_current_page(default_page_for_role(role))
         st.rerun()
         return
 

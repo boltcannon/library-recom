@@ -491,10 +491,7 @@ def render_sidebar_navigation(role: str, user_name: str) -> str:
         st.session_state["nav_page"] = current_options[0]
 
     sidebar_key = "sidebar_nav_page"
-    if (
-        st.session_state.get(sidebar_key) not in current_options
-        or st.session_state.get(sidebar_key) != st.session_state["nav_page"]
-    ):
+    if st.session_state.get(sidebar_key) not in current_options:
         st.session_state[sidebar_key] = st.session_state["nav_page"]
 
     page = st.sidebar.radio(
@@ -522,18 +519,21 @@ def render_progress_steps(steps: list[str], current_step: int) -> None:
 
 
 def render_metric_grid(items: list[dict[str, str]]) -> None:
-    blocks = []
-    for item in items:
-        blocks.append(
-            f"""
-            <div class="dashboard-kpi">
-                <div class="label">{escape(str(item.get("label", "")))}</div>
-                <div class="value">{escape(str(item.get("value", "")))}</div>
-                <div class="note">{escape(str(item.get("note", "")))}</div>
-            </div>
-            """
-        )
-    st.markdown(f'<div class="dashboard-grid">{"".join(blocks)}</div>', unsafe_allow_html=True)
+    if not items:
+        return
+
+    columns = st.columns(len(items))
+    for column, item in zip(columns, items):
+        with column:
+            with st.container(border=True):
+                st.markdown(
+                    f"""
+                    <div class="mini-label">{escape(str(item.get("label", "")))}</div>
+                    <div style="font-family:'Nunito',sans-serif;font-size:2rem;font-weight:800;line-height:1.1;">{escape(str(item.get("value", "")))}</div>
+                    <div style="color:var(--muted);margin-top:0.35rem;">{escape(str(item.get("note", "")))}</div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
 
 def _badge_html(label: str, tone: str = "neutral") -> str:
@@ -548,49 +548,42 @@ def render_recommendation_card(row: pd.Series) -> None:
     genre_text = str(row.get("genre_tags") or item_type or "General").replace(",", " | ")
     summary = shorten_text(row.get("abstract", ""), max_words=52)
 
-    st.markdown('<div class="rec-card">', unsafe_allow_html=True)
-    st.markdown(
-        f"""
-        <div class="rec-head">
-            <div>
-                <h3 class="rec-title">{escape(str(row.get("title") or "Untitled Book"))}</h3>
-                <div class="rec-meta">by {escape(str(row.get("author") or "Unknown author"))}</div>
+    with st.container(border=True):
+        title_col, score_col = st.columns([5, 1.2])
+        with title_col:
+            st.markdown(f"### {str(row.get('title') or 'Untitled Book')}")
+            st.caption(f"by {str(row.get('author') or 'Unknown author')}")
+        with score_col:
+            st.metric("Match", f"{float(row.get('recommendation_score', 0)):.1f}")
+
+        st.markdown(
+            f"""
+            <div class="badge-row">
+                {_badge_html(length_type, "orange")}
+                {_badge_html(reading_level, "green")}
+                {_badge_html(genre_text.title(), "blue")}
             </div>
-            <div class="score-pill">
-                <small>Match</small>
-                {float(row.get("recommendation_score", 0)):.1f}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        f"""
-        <div class="badge-row">
-            {_badge_html(length_type, "orange")}
-            {_badge_html(reading_level, "green")}
-            {_badge_html(genre_text.title(), "blue")}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        f"""
-        <div class="meta-grid">
-            <div class="meta-card"><strong>Location</strong>{escape(str(row.get("location") or "Not specified"))}</div>
-            <div class="meta-card"><strong>Book Type</strong>{escape(item_type)}</div>
-            <div class="meta-card"><strong>Pages</strong>{escape(str(pages_value if pages_value else "Unknown"))}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.success(explain_recommendation(row))
-    st.write(summary)
-    with st.expander("Peek inside this book", expanded=False):
-        st.write(f"**Abstract:** {shorten_text(row.get('abstract', ''), max_words=120)}")
-        if "abstract is missing" in str(row.get("abstract_status", "")).lower():
-            st.warning("This book can still be recommended, but the lesson may be weaker because the abstract is missing.")
-    st.markdown("</div>", unsafe_allow_html=True)
+            """,
+            unsafe_allow_html=True,
+        )
+
+        meta_col1, meta_col2, meta_col3 = st.columns(3)
+        with meta_col1:
+            st.caption("Location")
+            st.write(str(row.get("location") or "Not specified"))
+        with meta_col2:
+            st.caption("Book Type")
+            st.write(item_type)
+        with meta_col3:
+            st.caption("Pages")
+            st.write(str(pages_value if pages_value else "Unknown"))
+
+        st.success(explain_recommendation(row))
+        st.write(summary)
+        with st.expander("Peek inside this book", expanded=False):
+            st.write(f"**Abstract:** {shorten_text(row.get('abstract', ''), max_words=120)}")
+            if "abstract is missing" in str(row.get("abstract_status", "")).lower():
+                st.warning("This book can still be recommended, but the lesson may be weaker because the abstract is missing.")
 
 
 def render_book_snapshot(book: dict[str, Any], title: str = "Book details") -> None:

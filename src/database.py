@@ -1292,7 +1292,34 @@ def ensure_admin_account(
 @st.cache_data(show_spinner=False)
 def fetch_student_profile_for_user(config: DatabaseConfig, user_id: int) -> dict[str, Any] | None:
     init_db(config)
-    return fetch_one(config, "SELECT * FROM student_profiles WHERE user_id = %s", (user_id,))
+    profile = fetch_one(config, "SELECT * FROM student_profiles WHERE user_id = %s", (user_id,))
+    if profile:
+        return profile
+
+    legacy_profile = fetch_one(config, "SELECT * FROM students WHERE id = %s", (user_id,))
+    if not legacy_profile:
+        return None
+
+    full_name = str(legacy_profile.get("name", "") or "").strip()
+    class_grade = str(legacy_profile.get("grade", "") or "").strip()
+    preferred_language = str(legacy_profile.get("preferred_language", "") or "").strip()
+    favorite_topics = str(legacy_profile.get("favorite_topics", "") or "").strip()
+    reading_level = str(legacy_profile.get("reading_comfort_level", "") or "").strip()
+
+    if full_name or class_grade or preferred_language or favorite_topics or reading_level:
+        _upsert_student_profile_shadow(
+            config,
+            user_id,
+            full_name,
+            class_grade,
+            preferred_language,
+            favorite_topics,
+            reading_level,
+        )
+        clear_data_caches()
+        return fetch_one(config, "SELECT * FROM student_profiles WHERE user_id = %s", (user_id,))
+
+    return None
 
 
 def save_student_profile_for_user(
@@ -1444,7 +1471,7 @@ def replace_books(config: DatabaseConfig, books_df: pd.DataFrame) -> int:
         VALUES ({", ".join(["%s"] * len(BOOK_COLUMNS))})
     """
     param_sets = [
-        tuple(_prepare_value(row[column]) for column in BOOK_COLUMNS)
+        tuple(_prepare_value(row.get(column, "" if column != "pages" else 0)) for column in BOOK_COLUMNS)
         for _, row in books_df.iterrows()
     ]
     execute_query(config, insert_query, many=True, param_sets=param_sets)

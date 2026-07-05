@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 
 import pandas as pd
@@ -64,6 +65,18 @@ from src.utils import book_label
 DB_CONFIG = get_database_config()
 LANGUAGE_OPTIONS = ["English", "Hindi", "Bilingual", "Other"]
 READING_LEVEL_OPTIONS = ["easy", "medium", "challenging"]
+LOGGER = logging.getLogger(__name__)
+
+STUDENT_HOME_PAGE = "Home"
+STUDENT_DASHBOARD_PAGE = "My Dashboard"
+STUDENT_RECOMMENDATIONS_PAGE = "Find Books"
+STUDENT_LESSON_PAGE = "Learn with a Book"
+
+ADMIN_HOME_PAGE = "Home"
+ADMIN_DASHBOARD_PAGE = "Dashboard"
+ADMIN_CATALOG_PAGE = "Catalog Upload"
+ADMIN_USERS_PAGE = "User Management"
+ADMIN_LESSON_REVIEW_PAGE = "Lesson Review"
 
 
 def normalize_role(role: str) -> str:
@@ -82,7 +95,7 @@ def get_recommendations_cached(
 
 def setup_page() -> None:
     st.set_page_config(
-        page_title="School Library Recommendation Bot",
+        page_title="StoryShelf",
         page_icon="📚",
         layout="wide",
     )
@@ -106,7 +119,7 @@ def setup_page() -> None:
     st.session_state.setdefault("student_profile_record", None)
     st.session_state.setdefault("last_recommendation_signature", None)
     st.session_state.setdefault("auth_view", "login")
-    st.session_state.setdefault("nav_page", "Home")
+    st.session_state.setdefault("nav_page", STUDENT_HOME_PAGE)
     st.session_state.setdefault(
         "finder_preferences",
         {
@@ -163,8 +176,8 @@ def is_authenticated() -> bool:
 def default_page_for_role(role: str) -> str:
     role = normalize_role(role)
     if role == "admin":
-        return "Admin Dashboard"
-    return "Student Dashboard"
+        return ADMIN_DASHBOARD_PAGE
+    return STUDENT_DASHBOARD_PAGE
 
 
 def set_current_page(page: str) -> None:
@@ -178,7 +191,7 @@ def logout_user() -> None:
     setup_page()
     st.session_state["auth_user"] = None
     st.session_state["auth_view"] = auth_view
-    set_current_page("Home")
+    set_current_page(STUDENT_HOME_PAGE)
 
 
 def enforce_role(required_roles: set[str]) -> dict | None:
@@ -191,7 +204,7 @@ def enforce_role(required_roles: set[str]) -> dict | None:
     normalized_role = normalize_role(role)
     normalized_required_roles = {normalize_role(item) for item in required_roles}
     if normalized_role not in normalized_required_roles:
-        st.error("You do not have access to this section.")
+        st.error("This page is not available for your account.")
         set_current_page(default_page_for_role(normalized_role))
         return None
     return user
@@ -203,8 +216,8 @@ def render_auth_page() -> None:
 
     render_brand_header()
     render_hero(
-        "Welcome to the School Library App",
-        "Students can sign up, and students and admins can log in. If this is the first time setting up the app, create the first admin account here.",
+        "Welcome to StoryShelf",
+        "Discover library books, learn through stories, and manage the school catalog in one simple app.",
         kicker="Authentication",
     )
     selected_view = st.radio(
@@ -218,9 +231,9 @@ def render_auth_page() -> None:
         )),
     )
     if admin_exists:
-        st.caption("Admin access uses the same login form. Log in with an admin email to open the admin panel.")
+        st.caption("Students and admins use the same login form.")
     else:
-        st.caption("No admin account exists yet. Choose `Admin Sign Up` to create the first admin account.")
+        st.caption("Set up the first admin account with `Admin Sign Up`.")
     if selected_view == "Login":
         st.session_state["auth_view"] = "login"
     elif selected_view == "Admin Sign Up":
@@ -231,7 +244,7 @@ def render_auth_page() -> None:
     if selected_view == "Login":
         with st.container(border=True):
             st.markdown("### Login")
-            st.caption("Use this for student or admin accounts.")
+            st.caption("Use your student or admin email to continue.")
             with st.form("login_form"):
                 email = st.text_input("Email", key="login_email")
                 password = st.text_input("Password", type="password", key="login_password")
@@ -239,7 +252,7 @@ def render_auth_page() -> None:
             if submitted:
                 user = authenticate_user(DB_CONFIG, email=email, password=password)
                 if not user:
-                    st.error("Invalid email or password.")
+                    st.error("Email or password not recognized.")
                 else:
                     st.session_state["auth_user"] = user
                     set_current_page(default_page_for_role(str(user.get("role", "student"))))
@@ -248,7 +261,7 @@ def render_auth_page() -> None:
     elif selected_view == "Sign Up":
         with st.container(border=True):
             st.markdown("### Sign Up")
-            st.caption("This creates a student account.")
+            st.caption("Create a student account to begin your reading journey.")
             with st.form("signup_form"):
                 full_name = st.text_input("Full name", key="signup_full_name")
                 email = st.text_input("Email", key="signup_email")
@@ -277,12 +290,12 @@ def render_auth_page() -> None:
                             st.session_state["auth_user"] = fetch_user_by_id(DB_CONFIG, user_id)
                             set_current_page(default_page_for_role("student"))
                             reset_student_learning_state()
-                            st.success("Your student account is ready.")
+                            st.success("Student account created.")
                             st.rerun()
     else:
         with st.container(border=True):
             st.markdown("### Admin Sign Up")
-            st.caption("Use this to create the first admin account. After that, additional admins should be created from the admin panel.")
+            st.caption("Create the first admin account. After that, new admin accounts can be created from User Management.")
             with st.form("first_admin_form"):
                 full_name = st.text_input("Admin full name", value="School Admin", key="admin_signup_full_name")
                 email = st.text_input("Admin email", key="admin_signup_email")
@@ -291,7 +304,7 @@ def render_auth_page() -> None:
                 submitted = st.form_submit_button("Create Admin Account", type="primary", use_container_width=True)
             if submitted:
                 if admin_exists:
-                    st.error("An admin account already exists. Please log in instead.")
+                    st.error("An admin account already exists. Please log in.")
                 elif not full_name.strip():
                     st.error("Please enter the admin's full name.")
                 elif not is_valid_email(email):
@@ -314,7 +327,7 @@ def render_auth_page() -> None:
                             st.session_state["auth_view"] = "login"
                             set_current_page(default_page_for_role("admin"))
                             reset_student_learning_state()
-                            st.success("Your admin account is ready.")
+                            st.success("Admin account created.")
                             st.rerun()
 
 
@@ -335,7 +348,7 @@ def require_student_profile() -> dict | None:
         return {**cached_profile, "id": int(user["id"]), "full_name": user.get("full_name", "")}
     profile = fetch_student_profile_for_user(DB_CONFIG, int(user["id"]))
     if not profile:
-        st.info("Please complete your student profile first from the Student Dashboard.")
+        st.info("Complete your profile in My Dashboard before continuing.")
         return None
     st.session_state["student_profile_record"] = profile
     st.session_state["student_profile"] = {
@@ -361,7 +374,7 @@ def render_student_profile_manager() -> None:
         "reading_level": profile.get("reading_level", "easy") if profile else "easy",
     }
 
-    render_section_heading("Student profile", "This helps the app remember how you like to read.")
+    render_section_heading("Your profile", "This helps StoryShelf suggest books that fit you better.")
     with st.container(border=True):
         if profile:
             render_status_tip(
@@ -370,7 +383,7 @@ def render_student_profile_manager() -> None:
             )
             if current_profile.get("favorite_topics", "").strip():
                 st.caption(f"Favorite topics: {current_profile['favorite_topics']}")
-            profile_container = st.expander("Edit student profile", expanded=False)
+            profile_container = st.expander("Edit profile", expanded=False)
         else:
             profile_container = st.container()
 
@@ -401,7 +414,7 @@ def render_student_profile_manager() -> None:
                     index=READING_LEVEL_OPTIONS.index(current_profile.get("reading_level", "easy")) if current_profile.get("reading_level", "easy") in READING_LEVEL_OPTIONS else 0,
                     key="student_profile_reading_level",
                 )
-                saved = st.form_submit_button("Save Student Profile", type="primary", use_container_width=True)
+                saved = st.form_submit_button("Save Profile", type="primary", use_container_width=True)
 
             if saved:
                 if not name.strip():
@@ -432,7 +445,7 @@ def render_student_profile_manager() -> None:
                         "reading_level": reading_level,
                     }
                     reset_student_learning_state()
-                    st.success("Student profile saved.")
+                    st.success("Profile saved.")
 
 
 def home_page() -> None:
@@ -459,16 +472,16 @@ def home_page() -> None:
             render_section_heading("Continue your reading adventure", "Move through the app like a guided journey instead of a big form.")
             render_status_tip(
                 "Suggested path",
-                "Open Student Dashboard to update your profile, then visit Find Books for a guided recommendation chat, and finish in Story-Based Learning.",
+                "Start in My Dashboard, then visit Find Books, and finish in Learn with a Book.",
             )
             if dashboard["favorite_topics"]:
                 render_status_tip("Favorite topics", dashboard["favorite_topics"])
             else:
-                render_status_tip("Favorite topics", "You can add favorite topics in your student profile to get sharper recommendations.")
+                render_status_tip("Favorite topics", "Add favorite topics in your profile to get sharper recommendations.")
         with col2:
             render_section_heading("Recent activity", "Your newest actions show up here so it is easy to continue where you left off.")
             if dashboard["recent_activity"].empty:
-                render_empty_state("Your reading timeline is waiting", "Save your profile and ask for book recommendations to start building your story journey.", "🚀")
+                render_empty_state("Your reading timeline is waiting", "Save your profile and ask for book recommendations to start your story journey.", "🚀")
             else:
                 st.dataframe(dashboard["recent_activity"], use_container_width=True, hide_index=True)
     else:
@@ -480,7 +493,7 @@ def home_page() -> None:
                 {"label": "Recommendation sessions", "value": str(metrics["total_recommendation_sessions"]), "note": "Student journeys launched"},
                 {
                     "label": "Average rating",
-                    "value": f"{metrics['average_feedback_rating']:.2f}" if metrics["average_feedback_rating"] is not None else "No rating yet",
+                    "value": f"{metrics['average_feedback_rating']:.2f}" if metrics["average_feedback_rating"] is not None else "No ratings yet",
                     "note": "Student feedback snapshot",
                 },
             ]
@@ -488,7 +501,7 @@ def home_page() -> None:
         render_section_heading("Admin control center", "Keep the app calm and school-ready by managing the catalog, lessons, and users from one place.")
         col1, col2 = st.columns(2)
         with col1:
-            render_status_tip("What to check first", "Review the dashboard, then make sure the catalog is uploaded and lesson review is ready for student-generated content.")
+            render_status_tip("What to check first", "Review the dashboard, then make sure the catalog is uploaded and lesson review is ready.")
         with col2:
             render_status_tip("What students see", "Students get a guided reading flow with book cards, story-based lessons, quiz mode, and a clean progress dashboard.")
 
@@ -498,30 +511,31 @@ def admin_page() -> None:
         return
     render_brand_header("admin")
     render_hero(
-        "Admin: Upload Catalog",
-        "Upload the school library Excel file and safely store it in the app database.",
+        "Catalog Upload",
+        "Upload the school library Excel file and save it safely for students to explore.",
         kicker="Admin space",
     )
-    render_section_heading("Upload the school catalog", "The importer is safe with missing columns, messy page counts, and imperfect spreadsheet exports.")
+    render_section_heading("Upload the school catalog", "The importer can handle missing columns, mixed page values, and messy spreadsheet exports.")
 
     uploaded_file = st.file_uploader("Upload library catalog (.xlsx)", type=["xlsx"])
     if uploaded_file is None:
-        render_empty_state("Drop in a catalog file", "Upload a school library Excel file here to fill the app with real books.", "📥")
+        render_empty_state("Upload a catalog to get started", "Add a school library Excel file here to fill StoryShelf with books.", "📥")
         return
 
     if st.button("Import Catalog", type="primary", use_container_width=True):
         try:
-            with st.spinner("Importing and enriching catalog data..."):
+            with st.spinner("Importing catalog..."):
                 result = ingest_catalog(uploaded_file, DB_CONFIG)
         except Exception as exc:  # noqa: BLE001
-            st.error(f"Catalog upload failed: {exc}")
+            LOGGER.exception("Catalog upload failed", exc_info=exc)
+            st.error("The catalog could not be imported. Please check the file and try again.")
             return
 
         reset_student_learning_state()
         log_catalog_upload(DB_CONFIG, result["imported_count"], result["columns"])
 
-        st.success(f"Catalog uploaded successfully. Imported {result['imported_count']} items.")
-        with st.expander("See detected columns and preview", expanded=True):
+        st.success(f"Catalog uploaded. {result['imported_count']} books are now available.")
+        with st.expander("Preview import details", expanded=True):
             st.write("**Detected columns:**", ", ".join(result["columns"]))
             st.dataframe(result["preview"], use_container_width=True, hide_index=True)
 
@@ -532,8 +546,8 @@ def student_dashboard_page() -> None:
         return
     render_brand_header("student")
     render_hero(
-        "Student Dashboard",
-        "Keep your reading profile up to date, track progress, and continue your next story-powered lesson.",
+        "My Dashboard",
+        "Keep your profile up to date, track your reading, and continue your next story-powered lesson.",
         kicker="Student dashboard",
     )
     render_student_profile_manager()
@@ -553,16 +567,16 @@ def student_dashboard_page() -> None:
 
     col1, col2 = st.columns([0.95, 1.05])
     with col1:
-        render_status_tip("Favorite topics", dashboard["favorite_topics"] or "No favorite topics saved yet.")
+        render_status_tip("Favorite topics", dashboard["favorite_topics"] or "Add favorite topics to help StoryShelf suggest better matches.")
     with col2:
         render_status_tip(
-            "Next best step",
-            "If you want fresh recommendations, go to Find Books. If you already picked a book, jump into Story-Based Learning.",
+            "Next step",
+            "Go to Find Books for fresh recommendations, or open Learn with a Book if you already picked one.",
         )
 
     render_section_heading("Recent activity", "These are the newest things you did in the app.")
     if dashboard["recent_activity"].empty:
-        render_empty_state("No activity yet", "Start by filling your profile and asking the library bot to suggest a book.", "📖")
+        render_empty_state("No activity yet", "Start by saving your profile and asking StoryShelf to suggest a book.", "📖")
     else:
         st.dataframe(dashboard["recent_activity"], use_container_width=True, hide_index=True)
 
@@ -575,10 +589,10 @@ def student_dashboard_page() -> None:
         dashboard["lesson_history"],
     ]
     empty_messages = [
-        "No saved or read books yet.",
+        "No saved or finished books yet.",
         "No recommendation history yet.",
-        "No selected books yet.",
-        "No lessons generated yet.",
+        "No chosen books yet.",
+        "No lessons yet.",
     ]
     for tab, frame, message in zip(history_tabs, history_frames, empty_messages):
         with tab:
@@ -595,13 +609,13 @@ def student_page() -> None:
     render_brand_header("student")
     render_hero(
         "Find Books",
-        "Move through a short reading journey and let the library guide suggest books that fit your interests.",
+        "Answer a few simple questions and let StoryShelf suggest books that fit your interests.",
         kicker="Student journey",
     )
     books_df = fetch_all_books(DB_CONFIG)
     book_lookup = build_book_lookup(books_df)
     if books_df.empty:
-        render_empty_state("The library shelf is empty", "Ask the admin to upload a catalog so the story guide can recommend books.", "📚")
+        render_empty_state("No books are available yet", "Ask an admin to upload the school catalog so StoryShelf can start recommending books.", "📚")
         return
 
     profile = require_student_profile()
@@ -623,16 +637,14 @@ def student_page() -> None:
     finder_state.setdefault("reading_level", profile.get("reading_level", "easy") or "easy")
     finder_step = int(st.session_state.get("finder_step", 1))
 
-    render_chat_bubble(
-        f"Hi {profile['full_name']}! I can help you find a book from your school library. Answer one small question at a time and I will build your perfect reading path."
-    )
+    render_chat_bubble(f"Hi {profile['full_name']}! I will ask a few quick questions and then suggest books that match your reading style.")
     render_progress_steps(
         ["Choose a style", "Share topics", "Pick a length", "Pick reading comfort", "See your books"],
         min(finder_step, 5),
     )
 
     with st.container(border=True):
-        render_section_heading("Your reading choices", "We will only show one main choice at a time so it feels simple.")
+        render_section_heading("Your reading choices", "We will keep it simple and show one main choice at a time.")
         if profile.get("preferred_language"):
             st.caption(f"Preferred language: {profile['preferred_language']}")
 
@@ -764,9 +776,9 @@ def student_page() -> None:
         st.session_state["quiz_saved"] = False
 
         if not recommendation_records:
-            st.warning("I could not find a strong match yet. Try broader choices like Any, or use fewer topic words.")
+            st.warning("No close match yet. Try broader choices such as Any, or use fewer topic words.")
         else:
-            render_chat_bubble("I found some books that may suit you. Save one for later, mark one as read, or jump straight into a lesson.")
+            render_chat_bubble("Here are a few books that look like a good match. Save one, mark one as read, or jump straight into a lesson.")
 
     recommended_books = st.session_state.get("recommended_books", [])
     if not recommended_books:
@@ -774,7 +786,7 @@ def student_page() -> None:
         return
 
     student_book_statuses = fetch_saved_book_statuses_for_user(DB_CONFIG, int(user["id"]))
-    render_section_heading("Your matched books", "These cards are arranged from strongest match to weaker match.")
+    render_section_heading("Your book matches", "These cards are arranged from strongest match to lighter matches.")
     recommendation_df = pd.DataFrame(recommended_books)
     for _, row in recommendation_df.iterrows():
         book_id = int(row["id"])
@@ -806,12 +818,12 @@ def student_page() -> None:
         with col3:
             if st.button("Read with this book", key=f"use_book_{book_id}", type="primary", use_container_width=True):
                 st.session_state["selected_book_id"] = book_id
-                set_current_page("Story-Based Learning")
+                set_current_page(STUDENT_LESSON_PAGE)
                 st.rerun()
 
     options = {book["id"]: book_label(book) for book in recommended_books}
     with st.container(border=True):
-        render_section_heading("Keep one book ready", "Pick one book to carry into Story-Based Learning whenever you are ready.")
+        render_section_heading("Keep one book ready", "Choose one book to carry into Learn with a Book whenever you are ready.")
         selected_book_id = st.selectbox(
             "Pick a book to continue",
             options=list(options.keys()),
@@ -819,7 +831,7 @@ def student_page() -> None:
             key="finder_selected_book_id",
         )
         st.session_state["selected_book_id"] = selected_book_id
-        st.success("Next step: open Story-Based Learning to turn this book into a lesson and quiz.")
+        st.success("Next step: open Learn with a Book to turn this story into a lesson and quiz.")
 
 
 def story_learning_page() -> None:
@@ -828,7 +840,7 @@ def story_learning_page() -> None:
         return
     render_brand_header("student")
     render_hero(
-        "Story-Based Learning",
+        "Learn with a Book",
         "Turn a selected book into a simple lesson connected to a school subject, then try a short quiz.",
         kicker="Lesson builder",
     )
@@ -860,7 +872,7 @@ def story_learning_page() -> None:
 
     left_col, right_col = st.columns([1.15, 1])
     with left_col:
-        render_section_heading("Choose your story", "Start with one book, then connect it to a subject concept.")
+        render_section_heading("Choose your book", "Start with one book, then connect it to a school concept.")
         selected_book_id = st.selectbox(
             "Choose a book",
             options=selectable_ids,
@@ -878,9 +890,9 @@ def story_learning_page() -> None:
     with right_col:
         render_book_snapshot(book, "Selected book")
 
-    render_chat_bubble(f"Nice choice, {profile['full_name']}. Pick a subject and concept, and then try the quiz after the lesson.")
+    render_chat_bubble(f"Nice choice, {profile['full_name']}. Pick a subject and concept, then try the quiz after the lesson.")
     with st.container(border=True):
-        render_section_heading("Build the lesson", "Choose the subject first, then decide which concept you want to learn.")
+        render_section_heading("Build the lesson", "Choose the subject first, then decide what you want to learn.")
         subject = st.selectbox("Which subject do you want to learn?", ["Math", "Science", "English", "Social Science", "Values"], key="story_learning_subject")
         concept_suggestions = suggest_concepts(book, subject)
         st.info("Possible concept ideas: " + ", ".join(concept_suggestions))
@@ -892,7 +904,7 @@ def story_learning_page() -> None:
         concept = st.text_input("Which concept do you want to learn?", placeholder=concept_suggestions[0], key="story_learning_concept")
         selected_concept = concept.strip() or (quick_pick if quick_pick != "I want to type my own concept" else concept_suggestions[0])
 
-    if st.button("Generate Lesson", type="primary", use_container_width=True):
+    if st.button("Create Lesson", type="primary", use_container_width=True):
         with st.spinner("Generating lesson..."):
             session_id = st.session_state.get("active_session_id")
             if session_id is None:
@@ -951,7 +963,7 @@ def story_learning_page() -> None:
         and latest_lesson.get("subject") == subject
         and latest_lesson.get("requested_concept") == selected_concept
     ):
-        render_section_heading("Your lesson", "Read through the story connection first, then use the example and activity.")
+        render_section_heading("Your lesson", "Read the story connection first, then use the example and activity.")
         st.write(f"**Lesson concept:** {latest_lesson.get('concept', selected_concept)}")
 
         if latest_lesson["warning"]:
@@ -964,11 +976,11 @@ def story_learning_page() -> None:
         with st.container(border=True):
             render_lesson_sections(latest_lesson["sections"])
 
-        st.info("An admin can review this lesson before wider classroom use.")
+        st.info("This lesson can be reviewed by an admin before wider classroom use.")
 
         quiz_questions = latest_lesson.get("quiz_questions", [])
         if quiz_questions:
-            render_section_heading("Quiz mode", "Answer these quick questions to see what you understood.")
+            render_section_heading("Quiz", "Answer these quick questions to see what you understood.")
             with st.container(border=True):
                 with st.form("lesson_quiz_form"):
                     quiz_answers = []
@@ -1008,9 +1020,9 @@ def story_learning_page() -> None:
                         st.write(f"**Correct answer:** {item['correct_answer']}")
                         st.write(item["feedback"])
 
-        render_section_heading("Quick feedback", "A tiny bit of feedback helps improve the next lesson.")
+        render_section_heading("Quick feedback", "A little feedback helps improve the next lesson.")
         if st.session_state.get("feedback_saved"):
-            st.success("Feedback saved. Thank you for helping improve the app.")
+            st.success("Thanks for the feedback.")
 
         with st.container(border=True):
             with st.form("feedback_form"):
@@ -1018,7 +1030,7 @@ def story_learning_page() -> None:
                 lesson_understandable = st.radio("Was the lesson understandable?", ["Yes", "No"], horizontal=True)
                 rating = st.slider("Overall rating", min_value=1, max_value=5, value=4)
                 comment = st.text_input("Optional comment")
-                feedback_submitted = st.form_submit_button("Save Feedback", type="primary", use_container_width=True)
+                feedback_submitted = st.form_submit_button("Send Feedback", type="primary", use_container_width=True)
 
         if feedback_submitted:
             save_user_feedback(
@@ -1039,7 +1051,7 @@ def admin_dashboard_page() -> None:
         return
     render_brand_header("admin")
     render_hero(
-        "Admin Dashboard",
+        "Dashboard",
         "See library activity, recommendation sessions, catalog health, and feedback trends in one calm workspace.",
         kicker="Admin space",
     )
@@ -1052,7 +1064,7 @@ def admin_dashboard_page() -> None:
             {"label": "Recommendation sessions", "value": str(metrics["total_recommendation_sessions"]), "note": "Student reading journeys launched"},
             {
                 "label": "Average feedback",
-                "value": f"{metrics['average_feedback_rating']:.2f}" if metrics["average_feedback_rating"] is not None else "No feedback yet",
+                "value": f"{metrics['average_feedback_rating']:.2f}" if metrics["average_feedback_rating"] is not None else "No ratings yet",
                 "note": "Student satisfaction snapshot",
             },
         ]
@@ -1066,7 +1078,7 @@ def admin_dashboard_page() -> None:
     render_section_heading("Most selected books", "These are the titles students are choosing most often.")
     most_selected_books = metrics["most_selected_books"]
     if most_selected_books.empty:
-        render_empty_state("No book selections yet", "Once students begin choosing books, the most popular titles will appear here.", "📈")
+        render_empty_state("No book selections yet", "Popular titles will appear here once students start choosing books.", "📈")
     else:
         with st.container(border=True):
             st.dataframe(most_selected_books, use_container_width=True, hide_index=True)
@@ -1079,19 +1091,18 @@ def admin_user_management_page() -> None:
 
     render_brand_header("admin")
     render_hero(
-        "Admin: User Management",
+        "User Management",
         "Create admin accounts, review users, change roles, and control who can enter the app.",
         kicker="Admin space",
     )
 
-    render_section_heading("Create a new admin", "Use this for trusted school staff who need dashboard, catalog, and lesson-review access.")
+    render_section_heading("Create an admin account", "Use this for trusted school staff who need catalog, dashboard, and lesson review access.")
     with st.container(border=True):
         with st.form("create_staff_form"):
             full_name = st.text_input("Full name")
             email = st.text_input("Email")
             password = st.text_input("Temporary password", type="password")
-            role = st.selectbox("Role", ["admin"], index=0)
-            create_submitted = st.form_submit_button("Create Account", type="primary", use_container_width=True)
+            create_submitted = st.form_submit_button("Create Admin Account", type="primary", use_container_width=True)
 
         if create_submitted:
             if not full_name.strip():
@@ -1105,14 +1116,18 @@ def admin_user_management_page() -> None:
                 if password_error:
                     st.error(password_error)
                 else:
-                    create_user(DB_CONFIG, full_name=full_name, email=email, password=password, role=role)
-                    st.success(f"{role.title()} account created successfully.")
-                    st.rerun()
+                    try:
+                        create_user(DB_CONFIG, full_name=full_name, email=email, password=password, role="admin")
+                    except ValueError as exc:
+                        st.error(str(exc))
+                    else:
+                        st.success("Admin account created.")
+                        st.rerun()
 
     users_df = fetch_all_users(DB_CONFIG)
     render_section_heading("All users", "Review the full list before making access changes.")
     if users_df.empty:
-        render_empty_state("No users yet", "Create an admin or let students sign up to start building the user list.", "👥")
+        render_empty_state("No users yet", "Create the first admin account or let students sign up to start building the user list.", "👥")
         return
 
     display_df = users_df.copy()
@@ -1120,7 +1135,7 @@ def admin_user_management_page() -> None:
     display_df["is_active"] = display_df["is_active"].apply(lambda value: "Active" if bool(value) else "Inactive")
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-    render_section_heading("Manage existing users", "Open a user card to update their role or account status.")
+    render_section_heading("Manage existing users", "Open a user card to update access or account status.")
     for _, row in users_df.iterrows():
         user_id = int(row["id"])
         is_self = user_id == int(current_admin["id"])
@@ -1130,7 +1145,7 @@ def admin_user_management_page() -> None:
             st.write(f"**User ID:** {user_id}")
             st.write(f"**Created at:** {row['created_at']}")
             if is_self:
-                st.warning("This is your current admin account. Self-demotion and self-deactivation are blocked.")
+                st.warning("This is your current admin account. You cannot change your own admin access here.")
 
             with st.form(f"user_manage_{user_id}"):
                 new_role = st.selectbox(
@@ -1141,7 +1156,7 @@ def admin_user_management_page() -> None:
                 )
                 new_active = st.checkbox("Account is active", value=is_active, key=f"active_toggle_{user_id}")
                 confirm_change = st.checkbox("I understand this will change this user's access", key=f"confirm_change_{user_id}")
-                save_changes = st.form_submit_button("Save Changes", use_container_width=True)
+                save_changes = st.form_submit_button("Save", use_container_width=True)
 
             if save_changes:
                 if not confirm_change:
@@ -1162,7 +1177,7 @@ def admin_user_management_page() -> None:
                         st.success("User account updated.")
                         st.rerun()
                     else:
-                        st.info("No changes were made.")
+                        st.info("No changes to save.")
 
 
 def admin_lesson_review_page() -> None:
@@ -1170,7 +1185,7 @@ def admin_lesson_review_page() -> None:
         return
     render_brand_header("admin")
     render_hero(
-        "Admin: Lesson Review",
+        "Lesson Review",
         "Review the generated lesson, edit the final wording, save it, and export it for classroom use.",
         kicker="Admin space",
     )
@@ -1209,7 +1224,7 @@ def admin_lesson_review_page() -> None:
         }
 
     if lesson_context is None:
-        render_empty_state("No lesson waiting for review", "Generate a lesson first from Story-Based Learning, then come here to review and save it.", "🪄")
+        render_empty_state("No lesson to review yet", "Create a lesson from Learn with a Book first, then come here to review and save it.", "🪄")
         return
 
     render_section_heading(book["title"] or "Untitled Book", "Review the source book first, then compare the generated lesson with the edited version.")
@@ -1229,7 +1244,7 @@ def admin_lesson_review_page() -> None:
 
     default_review = saved_review["reviewed_lesson"] if saved_review else generated_lesson
     with st.container(border=True):
-        render_section_heading("Admin edited version", "Refine the wording, then save or download the polished lesson.")
+        render_section_heading("Edited version", "Refine the wording, then save or download the polished lesson.")
         reviewed_lesson = st.text_area("Edit reviewed lesson", value=default_review, height=320)
 
     col1, col2 = st.columns([1, 1])
@@ -1244,7 +1259,7 @@ def admin_lesson_review_page() -> None:
                 generated_lesson=generated_lesson,
                 reviewed_lesson=reviewed_lesson,
             )
-            st.success("Reviewed lesson saved to the database.")
+            st.success("Reviewed lesson saved.")
     with col2:
         filename = f"reviewed_lesson_book_{selected_book_id}.txt"
         st.download_button(
@@ -1269,7 +1284,7 @@ def main() -> None:
 
     role = normalize_role(str(user.get("role", "student")))
     if role not in ALLOWED_ROLES:
-        st.error("This account has an invalid role configuration.")
+        st.error("This account needs support. Please contact an administrator.")
         logout_user()
         st.rerun()
         return
@@ -1286,8 +1301,8 @@ def main() -> None:
         return
 
     allowed_pages = {
-        "student": {"Home", "Student Dashboard", "Find Books", "Story-Based Learning"},
-        "admin": {"Home", "Admin Dashboard", "Admin: User Management", "Admin: Upload Catalog", "Admin: Lesson Review"},
+        "student": {STUDENT_HOME_PAGE, STUDENT_DASHBOARD_PAGE, STUDENT_RECOMMENDATIONS_PAGE, STUDENT_LESSON_PAGE},
+        "admin": {ADMIN_HOME_PAGE, ADMIN_DASHBOARD_PAGE, ADMIN_USERS_PAGE, ADMIN_CATALOG_PAGE, ADMIN_LESSON_REVIEW_PAGE},
     }
     if page not in allowed_pages.get(role, set()):
         st.error("That page is not available for your role.")
@@ -1295,21 +1310,21 @@ def main() -> None:
         st.rerun()
         return
 
-    if page == "Home":
+    if page == STUDENT_HOME_PAGE:
         home_page()
-    elif page == "Student Dashboard":
+    elif page == STUDENT_DASHBOARD_PAGE:
         student_dashboard_page()
-    elif page == "Find Books":
+    elif page == STUDENT_RECOMMENDATIONS_PAGE:
         student_page()
-    elif page == "Admin: Upload Catalog":
+    elif page == ADMIN_CATALOG_PAGE:
         admin_page()
-    elif page == "Story-Based Learning":
+    elif page == STUDENT_LESSON_PAGE:
         story_learning_page()
-    elif page == "Admin Dashboard":
+    elif page == ADMIN_DASHBOARD_PAGE:
         admin_dashboard_page()
-    elif page == "Admin: User Management":
+    elif page == ADMIN_USERS_PAGE:
         admin_user_management_page()
-    elif page == "Admin: Lesson Review":
+    elif page == ADMIN_LESSON_REVIEW_PAGE:
         admin_lesson_review_page()
 
 

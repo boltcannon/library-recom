@@ -473,16 +473,16 @@ def render_sidebar_navigation(role: str, user_name: str) -> str:
     page_options = {
         "student": [
             "Home",
-            "Student Dashboard",
+            "My Dashboard",
             "Find Books",
-            "Story-Based Learning",
+            "Learn with a Book",
         ],
         "admin": [
             "Home",
-            "Admin Dashboard",
-            "Admin: Lesson Review",
-            "Admin: User Management",
-            "Admin: Upload Catalog",
+            "Dashboard",
+            "Lesson Review",
+            "User Management",
+            "Catalog Upload",
         ],
     }
     current_options = page_options.get(role, ["Home"])
@@ -503,8 +503,8 @@ def render_sidebar_navigation(role: str, user_name: str) -> str:
     st.session_state["nav_page"] = page
     st.sidebar.markdown("---")
     flow_text = {
-        "student": "Profile -> Find a book -> Build a lesson -> Take the quiz",
-        "admin": "Dashboard -> Review lessons -> Manage users -> Upload catalogs",
+        "student": "My Dashboard -> Find Books -> Learn with a Book -> Quiz",
+        "admin": "Dashboard -> Lesson Review -> User Management -> Catalog Upload",
     }
     st.sidebar.markdown(f"**Suggested flow**\n\n{flow_text.get(role, flow_text['student'])}")
     return page
@@ -578,10 +578,11 @@ def render_recommendation_card(row: pd.Series) -> None:
             st.caption("Pages")
             st.write(str(pages_value if pages_value else "Unknown"))
 
-        st.success(explain_recommendation(row))
-        st.write(summary)
+        st.info(explain_recommendation(row))
+        st.write(summary or "No summary is available for this book yet.")
         with st.expander("Peek inside this book", expanded=False):
-            st.write(f"**Abstract:** {shorten_text(row.get('abstract', ''), max_words=120)}")
+            abstract_preview = shorten_text(row.get("abstract", ""), max_words=120)
+            st.write(f"**Abstract:** {abstract_preview or 'No summary is available for this book yet.'}")
             if "abstract is missing" in str(row.get("abstract_status", "")).lower():
                 st.warning("This book can still be recommended, but the lesson may be weaker because the abstract is missing.")
 
@@ -601,7 +602,8 @@ def render_book_snapshot(book: dict[str, Any], title: str = "Book details") -> N
             """,
             unsafe_allow_html=True,
         )
-        st.write(f"**Abstract:** {shorten_text(book.get('abstract', ''), max_words=80)}")
+        abstract_preview = shorten_text(book.get("abstract", ""), max_words=80)
+        st.write(f"**Abstract:** {abstract_preview or 'No summary is available for this book yet.'}")
 
 
 def render_lesson_sections(sections: list[tuple[str, Any]]) -> None:

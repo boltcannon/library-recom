@@ -97,19 +97,6 @@ def match_topic_to_book(topic: str, book_index: dict[str, list[str]]) -> dict[st
     }
 
 
-def approximate_grade_band(grade: str) -> str:
-    try:
-        grade_num = int(str(grade).strip())
-    except (TypeError, ValueError):
-        grade_num = 5
-
-    if grade_num <= 3:
-        return "easy"
-    if grade_num <= 7:
-        return "medium"
-    return "challenging"
-
-
 def score_topic_matches(topic_results: list[dict[str, object]]) -> tuple[float, list[str], str]:
     matched_topics = [result for result in topic_results if result["matched_terms"]]
     if not matched_topics:

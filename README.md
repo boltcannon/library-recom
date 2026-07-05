@@ -1,6 +1,6 @@
-# School Library Recommendation and Story-Based Learning Bot
+# StoryShelf
 
-This project is a Streamlit app that helps schools upload a library catalog, recommend real books to students, and generate simple story-based concept lessons from book abstracts.
+StoryShelf is a Streamlit app that helps schools upload a library catalog, recommend real books to students, and generate simple story-based concept lessons from book abstracts.
 
 ## Features
 
@@ -16,7 +16,7 @@ This project is a Streamlit app that helps schools upload a library catalog, rec
 - Admin lesson review with editing, saving, and export
 - Database logging for recommendation sessions, selected books, lessons, and feedback
 - Basic dashboard for uploads, sessions, popular books, and average rating
-- Safe fallback lesson template when no API key is available
+- Standard lesson mode when no API key is available
 - Deployment-ready config for local runs, Streamlit Community Cloud, Render, and Railway
 
 ## Folder Structure
@@ -68,7 +68,7 @@ FIRST_ADMIN_EMAIL=
 FIRST_ADMIN_PASSWORD=
 ```
 
-- `OPENAI_API_KEY` is optional. If it is missing, the app safely uses the fallback lesson generator.
+- `OPENAI_API_KEY` is optional. If it is missing, the app safely uses standard lesson mode.
 - `DATABASE_URL` is optional for local development, but it should be set in production.
 - `LIBRARY_DB_PATH` is only used for local SQLite fallback when `DATABASE_URL` is not set.
 - `FIRST_ADMIN_*` is optional, but it is the easiest way to create the first admin account.
@@ -94,8 +94,8 @@ If the database is empty, the app still starts safely and shows clear guidance t
 
 ### Role access
 
-- `student`: Student Dashboard, Find Books, Story-Based Learning
-- `admin`: Admin Dashboard, Admin Lesson Review, Admin User Management, Admin Upload Catalog
+- `student`: My Dashboard, Find Books, Learn with a Book
+- `admin`: Dashboard, Lesson Review, User Management, Catalog Upload
 
 ## First Admin Account Setup
 
@@ -114,7 +114,7 @@ FIRST_ADMIN_PASSWORD=StrongPass1
 
 On startup, the app will create or refresh that admin account securely if those variables are present.
 
-After logging in as admin, open `Admin: User Management` to:
+After logging in as admin, open `User Management` to:
 
 - create another admin if needed
 - promote a student to admin
@@ -126,7 +126,7 @@ Inactive users cannot log in.
 ## How to Upload Catalog
 
 1. Open the app in Streamlit.
-2. Go to `Admin: Upload Catalog`.
+2. Go to `Catalog Upload`.
 3. Upload an `.xlsx` catalog file.
 4. Click `Import Catalog`.
 5. Review the import count and preview table.
@@ -158,7 +158,7 @@ The recommendation engine uses simple rule-based scoring:
 - Medium-weight boosts for story/knowledge preference and length match
 - Low-weight boosts for abstract availability and metadata completeness
 
-The app returns 3 to 5 recommendations, a score breakdown for each book, and a clearer explanation of exactly why each book matched.
+The app returns 3 to 5 recommendations and a short, student-friendly explanation of why each book matched.
 
 ## Evaluation And Logging
 
@@ -240,7 +240,7 @@ For Render production, use PostgreSQL through `DATABASE_URL`. SQLite remains use
 - The app checks whether the chosen concept fits the title and abstract and warns when the link is weak.
 - Grade level is used to keep the tone more age-appropriate for younger and older students.
 - If `OPENAI_API_KEY` is set, the app uses OpenAI to generate the lesson.
-- If no API key is available, the app uses a stronger rule-based fallback template.
+- If no API key is available, the app uses standard lesson mode.
 - The app does not invent story details and warns when the connection between concept and abstract is weak.
 - Admins can review the generated lesson, edit the final text, save it to the database, and export it as a `.txt` file.
 

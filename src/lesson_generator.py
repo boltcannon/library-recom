@@ -430,9 +430,9 @@ def generate_openai_lesson(
 ) -> tuple[list[tuple[str, Any]] | None, str]:
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
-        return None, "OpenAI API key is not available, so the fallback lesson template was used."
+        return None, "Using standard lesson mode."
     if OpenAI is None:
-        return None, "OpenAI package is not installed, so the fallback lesson template was used."
+        return None, "Using standard lesson mode."
 
     try:
         client = OpenAI(api_key=api_key)
@@ -443,7 +443,7 @@ def generate_openai_lesson(
         content = response.output_text.strip()
         return parse_lesson_text(content), ""
     except Exception as exc:  # noqa: BLE001
-        return None, f"OpenAI lesson generation was unavailable, so the fallback lesson template was used. ({exc})"
+        return None, "Using standard lesson mode."
 
 
 def generate_lesson(book: dict[str, Any], subject: str, concept: str, grade: str) -> dict[str, Any]:

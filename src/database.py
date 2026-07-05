@@ -186,6 +186,8 @@ USER_FEEDBACK_COLUMN_TYPES = {
     "created_at": "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
 }
 
+APP_USER_ROLES = {"student", "admin"}
+
 
 def _id_column(config: DatabaseConfig) -> str:
     return "SERIAL PRIMARY KEY" if config.is_postgres else "INTEGER PRIMARY KEY AUTOINCREMENT"
@@ -322,6 +324,8 @@ def ensure_table_columns(config: DatabaseConfig, table_name: str, expected_colum
     for column, column_type in expected_columns.items():
         if column not in existing_columns:
             execute_query(config, f"ALTER TABLE {table_name} ADD COLUMN {column} {column_type}")
+            get_existing_columns.clear()
+            existing_columns = get_existing_columns(config, table_name)
 
 
 def ensure_index(config: DatabaseConfig, index_name: str, table_name: str, columns: str, *, unique: bool = False) -> None:
@@ -332,6 +336,7 @@ def ensure_index(config: DatabaseConfig, index_name: str, table_name: str, colum
     )
 
 
+@st.cache_data(show_spinner=False)
 def get_existing_columns(config: DatabaseConfig, table_name: str) -> set[str]:
     if config.is_postgres:
         rows = fetch_all(
@@ -346,6 +351,15 @@ def get_existing_columns(config: DatabaseConfig, table_name: str) -> set[str]:
         return {row["column_name"] for row in rows}
     rows = fetch_all(config, f"PRAGMA table_info({table_name})")
     return {row["name"] for row in rows}
+
+
+def normalize_app_role(role: str) -> str:
+    normalized = role.strip().lower()
+    if normalized == "teacher":
+        normalized = "admin"
+    if normalized not in APP_USER_ROLES:
+        raise ValueError("Unsupported role.")
+    return normalized
 
 
 def _migrate_legacy_student_profiles(config: DatabaseConfig) -> None:
@@ -1196,6 +1210,10 @@ def create_user(
     role: str = "student",
 ) -> int:
     init_db(config)
+    normalized_role = normalize_app_role(role)
+    existing = fetch_user_by_email(config, email)
+    if existing:
+        raise ValueError("An account with this email already exists.")
     user_id = insert_and_get_id(
         config,
         """
@@ -1203,9 +1221,9 @@ def create_user(
         VALUES (%s, %s, %s, %s, TRUE)
         RETURNING id
         """,
-        (full_name.strip(), normalize_email(email), hash_password(password), role.strip().lower()),
+        (full_name.strip(), normalize_email(email), hash_password(password), normalized_role),
     )
-    if role.strip().lower() == "student":
+    if normalized_role == "student":
         execute_query(
             config,
             """
@@ -1224,6 +1242,7 @@ def update_user_role(
     new_role: str,
 ) -> None:
     init_db(config)
+    normalized_role = normalize_app_role(new_role)
     execute_query(
         config,
         """
@@ -1231,7 +1250,7 @@ def update_user_role(
         SET role = %s
         WHERE id = %s
         """,
-        (new_role.strip().lower(), user_id),
+        (normalized_role, user_id),
     )
     clear_data_caches()
 
@@ -1436,6 +1455,30 @@ def save_user_feedback(
     comment: str = "",
 ) -> int:
     init_db(config)
+    existing = None
+    if lesson_id is not None:
+        existing = fetch_one(
+            config,
+            "SELECT id FROM user_feedback WHERE user_id = %s AND lesson_id = %s",
+            (user_id, lesson_id),
+        )
+    if existing:
+        execute_query(
+            config,
+            """
+            UPDATE user_feedback
+            SET recommendation_useful = %s,
+                lesson_understandable = %s,
+                rating = %s,
+                comment = %s,
+                created_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            """,
+            (int(bool(recommendation_useful)), int(bool(lesson_understandable)), int(rating), comment.strip(), int(existing["id"])),
+        )
+        clear_data_caches()
+        return int(existing["id"])
+
     feedback_id = insert_and_get_id(
         config,
         """
@@ -2030,15 +2073,26 @@ def fetch_student_dashboard_data_for_user(config: DatabaseConfig, user_id: int) 
                 books.title,
                 books.author,
                 saved_books.status,
-                reading_history.opened_at,
-                reading_history.completed_at
+                history.opened_at,
+                history.completed_at
             FROM saved_books
             JOIN books ON books.id = saved_books.book_id
-            LEFT JOIN reading_history
-                ON reading_history.user_id = saved_books.user_id
-                AND reading_history.book_id = saved_books.book_id
+            LEFT JOIN (
+                SELECT rh.user_id, rh.book_id, rh.opened_at, rh.completed_at
+                FROM reading_history rh
+                JOIN (
+                    SELECT user_id, book_id, MAX(COALESCE(completed_at, opened_at)) AS latest_activity
+                    FROM reading_history
+                    GROUP BY user_id, book_id
+                ) latest
+                    ON latest.user_id = rh.user_id
+                    AND latest.book_id = rh.book_id
+                    AND latest.latest_activity = COALESCE(rh.completed_at, rh.opened_at)
+            ) history
+                ON history.user_id = saved_books.user_id
+                AND history.book_id = saved_books.book_id
             WHERE saved_books.user_id = %s
-            ORDER BY COALESCE(reading_history.completed_at, reading_history.opened_at, saved_books.created_at) DESC
+            ORDER BY COALESCE(history.completed_at, history.opened_at, saved_books.created_at) DESC
             """,
             (user_id,),
         )
@@ -2138,6 +2192,7 @@ def fetch_dashboard_metrics(config: DatabaseConfig) -> dict[str, Any]:
 
 
 def clear_data_caches() -> None:
+    get_existing_columns.clear()
     fetch_all_users.clear()
     fetch_admin_user_count.clear()
     fetch_user_by_email.clear()

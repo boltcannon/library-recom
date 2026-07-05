@@ -129,6 +129,12 @@ def reset_student_learning_state() -> None:
     st.session_state["quiz_saved"] = False
     st.session_state["last_recommendation_signature"] = None
     st.session_state["finder_step"] = 1
+    st.session_state["finder_preferences"] = {
+        "book_type": "story",
+        "topics": "",
+        "length_type": "any",
+        "reading_level": "easy",
+    }
 
 
 def build_book_lookup(books_df: pd.DataFrame) -> dict[int, dict]:
@@ -227,8 +233,8 @@ def render_auth_page() -> None:
             st.markdown("### Login")
             st.caption("Use this for student or admin accounts.")
             with st.form("login_form"):
-                email = st.text_input("Email")
-                password = st.text_input("Password", type="password")
+                email = st.text_input("Email", key="login_email")
+                password = st.text_input("Password", type="password", key="login_password")
                 submitted = st.form_submit_button("Log In", type="primary", use_container_width=True)
             if submitted:
                 user = authenticate_user(DB_CONFIG, email=email, password=password)
@@ -244,10 +250,10 @@ def render_auth_page() -> None:
             st.markdown("### Sign Up")
             st.caption("This creates a student account.")
             with st.form("signup_form"):
-                full_name = st.text_input("Full name")
-                email = st.text_input("Email")
-                password = st.text_input("Password", type="password")
-                confirm_password = st.text_input("Confirm password", type="password")
+                full_name = st.text_input("Full name", key="signup_full_name")
+                email = st.text_input("Email", key="signup_email")
+                password = st.text_input("Password", type="password", key="signup_password")
+                confirm_password = st.text_input("Confirm password", type="password", key="signup_confirm_password")
                 submitted = st.form_submit_button("Create Student Account", type="primary", use_container_width=True)
             if submitted:
                 if not full_name.strip():
@@ -263,21 +269,25 @@ def render_auth_page() -> None:
                     elif password != confirm_password:
                         st.error("Passwords do not match.")
                     else:
-                        user_id = create_user(DB_CONFIG, full_name=full_name, email=email, password=password, role="student")
-                        st.session_state["auth_user"] = fetch_user_by_id(DB_CONFIG, user_id)
-                        set_current_page(default_page_for_role("student"))
-                        reset_student_learning_state()
-                        st.success("Your student account is ready.")
-                        st.rerun()
+                        try:
+                            user_id = create_user(DB_CONFIG, full_name=full_name, email=email, password=password, role="student")
+                        except ValueError as exc:
+                            st.error(str(exc))
+                        else:
+                            st.session_state["auth_user"] = fetch_user_by_id(DB_CONFIG, user_id)
+                            set_current_page(default_page_for_role("student"))
+                            reset_student_learning_state()
+                            st.success("Your student account is ready.")
+                            st.rerun()
     else:
         with st.container(border=True):
             st.markdown("### Admin Sign Up")
             st.caption("Use this to create the first admin account. After that, additional admins should be created from the admin panel.")
             with st.form("first_admin_form"):
-                full_name = st.text_input("Admin full name", value="School Admin")
-                email = st.text_input("Admin email")
-                password = st.text_input("Admin password", type="password")
-                confirm_password = st.text_input("Confirm admin password", type="password")
+                full_name = st.text_input("Admin full name", value="School Admin", key="admin_signup_full_name")
+                email = st.text_input("Admin email", key="admin_signup_email")
+                password = st.text_input("Admin password", type="password", key="admin_signup_password")
+                confirm_password = st.text_input("Confirm admin password", type="password", key="admin_signup_confirm_password")
                 submitted = st.form_submit_button("Create Admin Account", type="primary", use_container_width=True)
             if submitted:
                 if admin_exists:
@@ -295,13 +305,17 @@ def render_auth_page() -> None:
                     elif password != confirm_password:
                         st.error("Passwords do not match.")
                     else:
-                        user_id = create_user(DB_CONFIG, full_name=full_name, email=email, password=password, role="admin")
-                        st.session_state["auth_user"] = fetch_user_by_id(DB_CONFIG, user_id)
-                        st.session_state["auth_view"] = "login"
-                        set_current_page(default_page_for_role("admin"))
-                        reset_student_learning_state()
-                        st.success("Your admin account is ready.")
-                        st.rerun()
+                        try:
+                            user_id = create_user(DB_CONFIG, full_name=full_name, email=email, password=password, role="admin")
+                        except ValueError as exc:
+                            st.error(str(exc))
+                        else:
+                            st.session_state["auth_user"] = fetch_user_by_id(DB_CONFIG, user_id)
+                            st.session_state["auth_view"] = "login"
+                            set_current_page(default_page_for_role("admin"))
+                            reset_student_learning_state()
+                            st.success("Your admin account is ready.")
+                            st.rerun()
 
 
 def get_cached_student_profile() -> dict | None:
@@ -362,26 +376,30 @@ def render_student_profile_manager() -> None:
 
         with profile_container:
             with st.form("student_profile_form"):
-                name = st.text_input("Student name", value=current_profile.get("name", ""))
+                name = st.text_input("Student name", value=current_profile.get("name", ""), key="student_profile_name")
                 grade = st.selectbox(
                     "Class / grade",
                     [str(level) for level in range(1, 13)],
                     index=max(0, [str(level) for level in range(1, 13)].index(str(current_profile.get("grade", "4"))) if str(current_profile.get("grade", "4")) in [str(level) for level in range(1, 13)] else 3),
+                    key="student_profile_grade",
                 )
                 preferred_language = st.selectbox(
                     "Preferred language",
                     LANGUAGE_OPTIONS,
                     index=LANGUAGE_OPTIONS.index(current_profile.get("preferred_language", "English")) if current_profile.get("preferred_language", "English") in LANGUAGE_OPTIONS else 0,
+                    key="student_profile_language",
                 )
                 favorite_topics = st.text_input(
                     "Favorite topics",
                     value=current_profile.get("favorite_topics", ""),
                     placeholder="animals, science, friendship, space",
+                    key="student_profile_topics",
                 )
                 reading_level = st.selectbox(
                     "Reading comfort level",
                     READING_LEVEL_OPTIONS,
                     index=READING_LEVEL_OPTIONS.index(current_profile.get("reading_level", "easy")) if current_profile.get("reading_level", "easy") in READING_LEVEL_OPTIONS else 0,
+                    key="student_profile_reading_level",
                 )
                 saved = st.form_submit_button("Save Student Profile", type="primary", use_container_width=True)
 
@@ -624,6 +642,7 @@ def student_page() -> None:
                 ["story", "knowledge", "any"],
                 horizontal=True,
                 index=["story", "knowledge", "any"].index(finder_state.get("book_type", "story")),
+                key="finder_book_type",
             )
             col1, col2 = st.columns([1, 1])
             with col1:
@@ -638,6 +657,7 @@ def student_page() -> None:
                 "What topics sound fun today?",
                 value=finder_state.get("topics", profile.get("favorite_topics", "")),
                 placeholder="animals, science, mystery, friendship, sports, space",
+                key="finder_topics",
             )
             col1, col2 = st.columns([1, 1])
             with col1:
@@ -654,6 +674,7 @@ def student_page() -> None:
                 "How long should the book feel?",
                 options=["short", "medium", "long", "any"],
                 value=finder_state.get("length_type", "any"),
+                key="finder_length_type",
             )
             col1, col2 = st.columns([1, 1])
             with col1:
@@ -671,6 +692,7 @@ def student_page() -> None:
                 ["easy", "medium", "challenging", "any"],
                 horizontal=True,
                 index=["easy", "medium", "challenging", "any"].index(finder_state.get("reading_level", "easy")),
+                key="finder_reading_level",
             )
             col1, col2 = st.columns([1, 1])
             with col1:
@@ -794,6 +816,7 @@ def student_page() -> None:
             "Pick a book to continue",
             options=list(options.keys()),
             format_func=lambda value: options[value],
+            key="finder_selected_book_id",
         )
         st.session_state["selected_book_id"] = selected_book_id
         st.success("Next step: open Story-Based Learning to turn this book into a lesson and quiz.")
@@ -843,6 +866,7 @@ def story_learning_page() -> None:
             options=selectable_ids,
             index=selectable_ids.index(default_book_id) if default_book_id in selectable_ids else 0,
             format_func=lambda value: book_label(book_lookup.get(value, {})),
+            key="story_learning_book_id",
         )
     st.session_state["selected_book_id"] = selected_book_id
 
@@ -857,14 +881,15 @@ def story_learning_page() -> None:
     render_chat_bubble(f"Nice choice, {profile['full_name']}. Pick a subject and concept, and then try the quiz after the lesson.")
     with st.container(border=True):
         render_section_heading("Build the lesson", "Choose the subject first, then decide which concept you want to learn.")
-        subject = st.selectbox("Which subject do you want to learn?", ["Math", "Science", "English", "Social Science", "Values"])
+        subject = st.selectbox("Which subject do you want to learn?", ["Math", "Science", "English", "Social Science", "Values"], key="story_learning_subject")
         concept_suggestions = suggest_concepts(book, subject)
         st.info("Possible concept ideas: " + ", ".join(concept_suggestions))
         quick_pick = st.selectbox(
             "Choose a suggested concept if you want",
             options=["I want to type my own concept"] + concept_suggestions,
+            key="story_learning_quick_pick",
         )
-        concept = st.text_input("Which concept do you want to learn?", placeholder=concept_suggestions[0])
+        concept = st.text_input("Which concept do you want to learn?", placeholder=concept_suggestions[0], key="story_learning_concept")
         selected_concept = concept.strip() or (quick_pick if quick_pick != "I want to type my own concept" else concept_suggestions[0])
 
     if st.button("Generate Lesson", type="primary", use_container_width=True):

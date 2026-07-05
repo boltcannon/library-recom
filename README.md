@@ -88,7 +88,7 @@ If the database is empty, the app still starts safely and shows clear guidance t
 - The first screen is now authentication, not role switching.
 - `Sign Up` creates a `student` account.
 - `Login` works for `student` and `admin` accounts.
-- If no admin exists yet, the auth screen also shows `Create First Admin`.
+- If no admin exists yet, the auth screen also shows `Admin Sign Up`.
 - The sidebar only shows pages that match the logged-in user's role.
 - Route access is checked in code as well, so changing `session_state` alone is not enough to unlock another role.
 
@@ -102,7 +102,7 @@ If the database is empty, the app still starts safely and shows clear guidance t
 You have two ways to create the first admin:
 
 1. From the UI:
-   If the app has no admin account yet, open the auth screen and use `Create First Admin`.
+   If the app has no admin account yet, open the auth screen and use `Admin Sign Up`.
 2. From environment variables:
    Set these before starting the app:
 

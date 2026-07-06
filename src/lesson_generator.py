@@ -58,11 +58,12 @@ DEFAULT_SUBJECT_CONCEPTS = {
 
 CONCEPT_PROFILES: dict[str, list[dict[str, Any]]] = {
     "Math": [
-        {"concept": "counting", "keywords": ["count", "number", "many", "total", "hundred", "first", "second", "third"]},
-        {"concept": "comparison", "keywords": ["more", "less", "compare", "greater", "smaller", "most", "least"]},
-        {"concept": "percentages", "keywords": ["hundred", "percent", "whole", "share", "ratio"]},
+        {"concept": "counting", "keywords": ["count", "number", "many", "total", "hundred", "facts", "first", "second", "third"]},
+        {"concept": "comparison", "keywords": ["more", "less", "compare", "greater", "smaller", "most", "least", "difference"]},
+        {"concept": "percentages", "keywords": ["hundred", "percent", "whole", "share", "ratio", "out of 100"]},
         {"concept": "fractions", "keywords": ["share", "equal", "half", "quarter", "divide"]},
-        {"concept": "data handling", "keywords": ["list", "group", "record", "count", "compare", "total", "survey"]},
+        {"concept": "data handling", "keywords": ["list", "group", "record", "count", "compare", "total", "survey", "facts", "chart", "table"]},
+        {"concept": "classification", "keywords": ["group", "sort", "classify", "category", "type", "facts", "list"]},
         {"concept": "patterns", "keywords": ["pattern", "repeat", "sequence", "order"]},
     ],
     "Science": [
@@ -237,22 +238,35 @@ def score_concept_fit(book: dict[str, Any], subject: str, concept: str) -> dict[
     score += 3 if exact_suggestion_match else 0
     score += min(len(matched_terms), 2) * 2
     score += min(keyword_hits, 3) * 2
+    numbers = extract_numbers(source_text)
 
     title = normalize_text(book.get("title", ""))
     abstract = normalize_text(book.get("abstract", ""))
     biography_history_markers = {"history", "biography", "women", "world", "leader", "leaders", "life", "lives", "past", "change"}
-    quant_markers = {"number", "count", "share", "half", "quarter", "percent", "compare", "data", "total", "hundred"}
+    reference_markers = {"fact", "facts", "list", "record", "table", "information", "ancient", "history", "civilization", "greece"}
+    quant_markers = {"number", "count", "share", "half", "quarter", "percent", "compare", "comparison", "data", "total", "hundred", "classify", "group", "sort"}
     source_marker_tokens = source_tokens | set(title.split()) | set(abstract.split())
-    if subject == "Math" and not matched_terms and not matched_keywords and source_marker_tokens & biography_history_markers and not source_marker_tokens & quant_markers:
-        score -= 3
+    concept_profile_bonus_targets = {"counting", "comparison", "data handling", "percentages", "classification"}
+    if (
+        subject == "Math"
+        and profile
+        and profile["concept"] in concept_profile_bonus_targets
+        and (numbers or source_marker_tokens & reference_markers)
+    ):
+        score += 3
+        if profile["concept"] in {"comparison", "data handling", "classification"} and source_marker_tokens & {"facts", "list", "record", "group", "history", "ancient"}:
+            score += 2
+
+    if subject == "Math" and not matched_terms and not matched_keywords and source_marker_tokens & biography_history_markers and not (source_marker_tokens & quant_markers or numbers):
+        score -= 2
 
     if not normalized_concept:
         level = "strong"
     elif score >= 8:
         level = "strong"
-    elif score >= 4:
+    elif score >= 3:
         level = "medium"
-    elif score >= 1:
+    elif score >= 0:
         level = "weak"
     else:
         level = "bad"
@@ -267,12 +281,17 @@ def score_concept_fit(book: dict[str, Any], subject: str, concept: str) -> dict[
         else:
             fit_reason = "This concept fits the main idea of the title and abstract."
         warning = ""
-    else:
-        mismatch_reason = (
-            f"The title and abstract do not give enough support for learning {chosen_concept} well."
-            if level == "weak"
-            else f"The title and abstract point in a different direction, so {chosen_concept} would feel forced here."
+    elif level == "weak":
+        if support_terms:
+            fit_reason = f"This concept is possible because the book still gives some support through {', '.join(support_terms)}."
+        else:
+            fit_reason = f"This concept is a lighter match, but the title and abstract still give enough context to teach it simply."
+        warning = (
+            f"This is a lighter match for {chosen_concept}. "
+            + (f"Better choices: {', '.join(better_concepts)}." if better_concepts else "You can still continue with a simple lesson.")
         )
+    else:
+        mismatch_reason = f"The title and abstract point in a different direction, so {chosen_concept} would feel forced here."
         if better_concepts:
             warning = f"{mismatch_reason} Better choices: {', '.join(better_concepts)}."
         else:
@@ -600,11 +619,12 @@ def build_fallback_lesson(
     examples, questions, answers = build_examples_questions_answers(book, subject, concept)
     support_terms = fit_result.get("matched_terms", []) + fit_result.get("matched_keywords", [])
     support_text = ", ".join(dict.fromkeys(support_terms[:4])) if support_terms else "the main ideas in the title and abstract"
-    why_fit = (
-        f"{title} fits {concept} because the title and abstract connect to {support_text}."
-        if fit_result["level"] == "strong"
-        else f"{title} can support {concept} because the abstract gives enough clues through {support_text}."
-    )
+    if fit_result["level"] == "strong":
+        why_fit = f"{title} fits {concept} because the title and abstract connect to {support_text}."
+    elif fit_result["level"] == "medium":
+        why_fit = f"{title} can support {concept} because the abstract gives enough clues through {support_text}."
+    else:
+        why_fit = f"{title} is not a perfect match for {concept}, but it still gives enough context to practice the idea through {support_text}."
     concept_explanation = build_concept_explanation(subject, concept, grade)
     example_lines = examples[:3]
     activity = build_activity(book, subject, concept)
@@ -676,9 +696,9 @@ def ensure_lesson_structure(sections: list[tuple[str, Any]]) -> list[tuple[str, 
 
 def build_final_warning(fit_result: dict[str, Any], fallback_notice: str) -> str:
     parts = []
-    if fit_result["warning"]:
+    if fit_result["warning"] and fit_result["level"] in {"weak", "bad"}:
         parts.append(fit_result["warning"])
-    if fallback_notice and fit_result["level"] in {"strong", "medium"}:
+    if fallback_notice and fit_result["level"] in {"strong", "medium", "weak"}:
         parts.append(fallback_notice)
     return " ".join(parts).strip()
 
@@ -702,7 +722,7 @@ def generate_quiz_questions(
     grade: str,
     fit_result: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    if fit_result["level"] in {"weak", "bad"}:
+    if fit_result["level"] == "bad":
         return []
 
     examples, questions, answers = build_examples_questions_answers(book, subject, concept)
@@ -792,7 +812,7 @@ def generate_lesson(book: dict[str, Any], subject: str, concept: str, grade: str
     chosen_concept = concept.strip() or suggest_concept(book, subject)
     fit_result = score_concept_fit(book, subject, chosen_concept)
 
-    if fit_result["level"] in {"weak", "bad"}:
+    if fit_result["level"] == "bad":
         return {
             "warning": build_final_warning(fit_result, ""),
             "sections": build_fit_guidance_sections(book, subject, chosen_concept, fit_result),

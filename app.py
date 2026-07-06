@@ -320,6 +320,15 @@ def store_recommendation_records_for_student(
     st.session_state["quiz_saved"] = False
 
 
+def resolve_final_concept(manual_concept: str, quick_pick: str, concept_suggestions: list[str]) -> str:
+    manual_value = manual_concept.strip()
+    if manual_value:
+        return manual_value
+    if quick_pick and quick_pick != "I want to type my own concept":
+        return quick_pick.strip()
+    return concept_suggestions[0].strip() if concept_suggestions else ""
+
+
 def get_current_user() -> dict | None:
     auth_user = st.session_state.get("auth_user")
     if not auth_user or not auth_user.get("id"):
@@ -1371,7 +1380,9 @@ def story_learning_page() -> None:
             key="story_learning_quick_pick",
         )
         concept = st.text_input("Which concept do you want to learn?", placeholder=concept_suggestions[0], key="story_learning_concept")
-        selected_concept = concept.strip() or (quick_pick if quick_pick != "I want to type my own concept" else concept_suggestions[0])
+        selected_concept = resolve_final_concept(concept, quick_pick, concept_suggestions)
+        if selected_concept:
+            st.caption(f"Final concept: {selected_concept}")
 
     if st.button("Create Lesson", type="primary", use_container_width=True):
         with st.spinner("Generating lesson..."):
@@ -1448,6 +1459,10 @@ def story_learning_page() -> None:
 
         if latest_lesson["warning"]:
             st.warning(latest_lesson["warning"])
+        elif latest_lesson.get("fit_result", {}).get("level") == "medium":
+            st.info("This concept is a good enough match, so StoryShelf built a lesson with the strongest ideas from the book.")
+        elif latest_lesson.get("fit_result", {}).get("level") == "weak":
+            st.info("This is a lighter connection, so the lesson stays simple and close to the title and abstract.")
         elif not latest_lesson.get("fit_result", {}).get("is_strong", True):
             suggested = latest_lesson.get("fit_result", {}).get("suggested_concepts", [])
             if suggested:

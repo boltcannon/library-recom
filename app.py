@@ -130,6 +130,7 @@ def setup_page() -> None:
     st.session_state.setdefault("recommendation_chat_owner_id", None)
     st.session_state.setdefault("recommendation_chat_error", "")
     st.session_state.setdefault("recommendation_chat_used_fallback", False)
+    st.session_state.setdefault("recommendation_chat_notice", "")
     st.session_state.setdefault("feedback_saved", False)
     st.session_state.setdefault("last_quiz_result", None)
     st.session_state.setdefault("quiz_saved", False)
@@ -160,6 +161,7 @@ def reset_student_learning_state() -> None:
     st.session_state["recommendation_chat_owner_id"] = None
     st.session_state["recommendation_chat_error"] = ""
     st.session_state["recommendation_chat_used_fallback"] = False
+    st.session_state["recommendation_chat_notice"] = ""
     st.session_state["feedback_saved"] = False
     st.session_state["last_quiz_result"] = None
     st.session_state["quiz_saved"] = False
@@ -223,8 +225,16 @@ def build_backend_recommendation_records(backend_recommendations: list[Any], boo
         author = ""
         reason = ""
         if isinstance(item, dict):
-            title = str(item.get("title") or item.get("book_title") or item.get("name") or "").strip()
-            author = str(item.get("author") or "").strip()
+            book_payload = item.get("book") if isinstance(item.get("book"), dict) else {}
+            title = str(
+                item.get("title")
+                or item.get("book_title")
+                or item.get("name")
+                or book_payload.get("title")
+                or book_payload.get("book_title")
+                or ""
+            ).strip()
+            author = str(item.get("author") or book_payload.get("author") or "").strip()
             reason = str(item.get("reason") or item.get("why") or item.get("explanation") or "").strip()
         elif isinstance(item, str):
             title = item.strip()
@@ -271,6 +281,14 @@ def generate_fallback_recommendations(profile: dict[str, Any], books_df: pd.Data
         top_n=5,
     )
     return recommendations.to_dict(orient="records")
+
+
+def build_fallback_assistant_message(message: str, recommendations_found: bool) -> str:
+    if recommendations_found:
+        return "I could not use the live chat service just now, so I matched a few books from your school library instead."
+    if message.strip():
+        return "I could not reach the live recommendation service right now. You can try again, or use the quick recommendation path below."
+    return "The recommendation service is not ready right now. You can still use the quick recommendation path below."
 
 
 def store_recommendation_records_for_student(
@@ -953,8 +971,12 @@ def render_recommendation_chat(user: dict[str, Any], profile: dict[str, Any], bo
         if chat_error:
             st.warning(chat_error)
 
+        chat_notice = st.session_state.get("recommendation_chat_notice", "")
+        if chat_notice:
+            st.info(chat_notice)
+
         if st.session_state.get("recommendation_chat_used_fallback"):
-            st.info("The live recommendation service was not fully available, so StoryShelf matched books from your library here.")
+            st.info("StoryShelf used your school library directly for these suggestions so you can keep reading without waiting.")
 
         with st.form("recommendation_chat_form"):
             student_message = st.text_input(
@@ -978,6 +1000,7 @@ def render_recommendation_chat(user: dict[str, Any], profile: dict[str, Any], bo
             st.session_state["recommendation_chat_owner_id"] = int(user["id"])
             st.session_state["recommendation_chat_error"] = ""
             st.session_state["recommendation_chat_used_fallback"] = False
+            st.session_state["recommendation_chat_notice"] = ""
 
             recommendation_records: list[dict[str, Any]] = []
             assistant_text = ""
@@ -989,22 +1012,34 @@ def render_recommendation_chat(user: dict[str, Any], profile: dict[str, Any], bo
                 st.session_state["recommendation_chat_session_id"] = backend_session_id
                 assistant_text = api_response.assistant_message
                 recommendation_records = build_backend_recommendation_records(api_response.recommendations, books_df)
+                if api_response.had_partial_payload and not recommendation_records:
+                    st.session_state["recommendation_chat_notice"] = "StoryShelf received part of the reply and is filling in the rest from your library."
                 if not recommendation_records:
                     recommendation_records = generate_fallback_recommendations(profile, books_df, message)
                     if recommendation_records:
-                        assistant_text = (
-                            assistant_text + " "
-                            + "I also matched a few books from your library catalog so you can keep going."
-                        ).strip()
+                        assistant_text = assistant_text or build_fallback_assistant_message(message, True)
                         st.session_state["recommendation_chat_used_fallback"] = True
-            except RecommendationAPIError:
+                elif not assistant_text:
+                    assistant_text = "I am still learning what fits best. Try one more detail like a topic, mood, or book length."
+            except RecommendationAPIError as exc:
+                if exc.should_reset_session:
+                    old_session_id = st.session_state.get("recommendation_chat_session_id")
+                    if old_session_id:
+                        try:
+                            delete_recommendation_session(RECOMMENDATION_API_BASE_URL, str(old_session_id))
+                        except RecommendationAPIError:
+                            LOGGER.warning("Unable to clear stale recommendation session %s", old_session_id)
+                    st.session_state["recommendation_chat_session_id"] = None
+                    st.session_state["recommendation_chat_owner_id"] = int(user["id"])
                 recommendation_records = generate_fallback_recommendations(profile, books_df, message)
                 if recommendation_records:
-                    assistant_text = "The recommendation service is unavailable right now, so I matched a few books from your library catalog here."
+                    assistant_text = build_fallback_assistant_message(message, True)
                     st.session_state["recommendation_chat_used_fallback"] = True
                 else:
-                    assistant_text = "The recommendation service is unavailable right now. Please try again, or use the quick reading choices below."
+                    assistant_text = build_fallback_assistant_message(message, False)
                     st.session_state["recommendation_chat_error"] = assistant_text
+                if exc.should_reset_session:
+                    st.session_state["recommendation_chat_notice"] = "StoryShelf started a fresh chat for you so the next message can continue smoothly."
 
             if assistant_text:
                 current_messages = list(st.session_state.get("recommendation_chat_messages", []))

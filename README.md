@@ -11,6 +11,7 @@ StoryShelf is a Streamlit app that helps schools upload a library catalog, recom
 - PostgreSQL-ready storage for production, with SQLite fallback for local development
 - Rule-based enrichment for length, reading level, genre, and subject tags
 - Student recommendation flow based on grade, topic, type, length, and reading level
+- Conversational recommendation chat with FastAPI backend integration and safe local fallback
 - Cleaner Streamlit UI with student top navigation, guided discovery flow, recommendation cards, and lesson review sections
 - Story-based lesson generation with optional OpenAI support
 - Admin lesson review with editing, saving, and export
@@ -63,6 +64,7 @@ Example `.env`:
 OPENAI_API_KEY=your_api_key_here
 DATABASE_URL=
 LIBRARY_DB_PATH=database/library.db
+RECOMMENDATION_API_BASE_URL=https://library-guide-w3svdnyxoq-el.a.run.app
 FIRST_ADMIN_NAME=
 FIRST_ADMIN_EMAIL=
 FIRST_ADMIN_PASSWORD=
@@ -71,6 +73,7 @@ FIRST_ADMIN_PASSWORD=
 - `OPENAI_API_KEY` is optional. If it is missing, the app safely uses standard lesson mode.
 - `DATABASE_URL` is optional for local development, but it should be set in production.
 - `LIBRARY_DB_PATH` is only used for local SQLite fallback when `DATABASE_URL` is not set.
+- `RECOMMENDATION_API_BASE_URL` points the student recommendation chat to the FastAPI backend.
 - `FIRST_ADMIN_*` is optional, but it is the easiest way to create the first admin account.
 
 ## How to Run
@@ -150,7 +153,12 @@ If any columns are missing, the app keeps running and stores blank values instea
 
 ## How Recommendation Works
 
-The recommendation engine uses simple rule-based scoring:
+The app now supports two recommendation paths:
+
+- A conversational student chat that sends messages to the FastAPI backend at `RECOMMENDATION_API_BASE_URL`
+- A local fallback recommender that still works if the chat service is unavailable or does not return usable book matches
+
+The local recommendation engine uses simple rule-based scoring:
 
 - Normalized text matching across title, abstract, item type, genre tags, and subject tags
 - Multiple topic keywords from the student, including comma-separated interests
@@ -159,6 +167,13 @@ The recommendation engine uses simple rule-based scoring:
 - Low-weight boosts for abstract availability and metadata completeness
 
 The app returns 3 to 5 recommendations and a short, student-friendly explanation of why each book matched.
+
+### Recommendation chat session handling
+
+- The student chat stores a recommendation `session_id` in Streamlit session state.
+- The same `session_id` is reused for follow-up messages in the same chat.
+- `Start new recommendation chat` clears the local chat state and sends a delete request to the backend when possible.
+- Logging out also clears the chat session.
 
 ## Evaluation And Logging
 

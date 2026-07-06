@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Any
 
 import pandas as pd
 import streamlit as st
 
 from src.auth import ALLOWED_ROLES, is_valid_email, validate_password_rules
 from src.config import get_database_config
+from src.config import get_recommendation_api_base_url
 from src.database import (
     authenticate_user,
     create_user,
@@ -44,7 +46,14 @@ from src.lesson_generator import (
     lesson_sections_to_text,
     suggest_concepts,
 )
+from src.recommendation_api import (
+    RecommendationAPIError,
+    create_client_session_id,
+    delete_recommendation_session,
+    send_recommendation_message,
+)
 from src.recommender import recommend_books
+from src.recommender import normalize_text
 from src.ui_helpers import (
     inject_global_styles,
     render_brand_header,
@@ -65,6 +74,7 @@ from src.ui_helpers import (
 from src.utils import book_label
 
 DB_CONFIG = get_database_config()
+RECOMMENDATION_API_BASE_URL = get_recommendation_api_base_url()
 LANGUAGE_OPTIONS = ["English", "Hindi", "Bilingual", "Other"]
 READING_LEVEL_OPTIONS = ["easy", "medium", "challenging"]
 LOGGER = logging.getLogger(__name__)
@@ -115,6 +125,11 @@ def setup_page() -> None:
     st.session_state.setdefault("student_profile", {})
     st.session_state.setdefault("latest_lesson", None)
     st.session_state.setdefault("active_session_id", None)
+    st.session_state.setdefault("recommendation_chat_session_id", None)
+    st.session_state.setdefault("recommendation_chat_messages", [])
+    st.session_state.setdefault("recommendation_chat_owner_id", None)
+    st.session_state.setdefault("recommendation_chat_error", "")
+    st.session_state.setdefault("recommendation_chat_used_fallback", False)
     st.session_state.setdefault("feedback_saved", False)
     st.session_state.setdefault("last_quiz_result", None)
     st.session_state.setdefault("quiz_saved", False)
@@ -140,6 +155,11 @@ def reset_student_learning_state() -> None:
     st.session_state["selected_book_id"] = None
     st.session_state["latest_lesson"] = None
     st.session_state["active_session_id"] = None
+    st.session_state["recommendation_chat_session_id"] = None
+    st.session_state["recommendation_chat_messages"] = []
+    st.session_state["recommendation_chat_owner_id"] = None
+    st.session_state["recommendation_chat_error"] = ""
+    st.session_state["recommendation_chat_used_fallback"] = False
     st.session_state["feedback_saved"] = False
     st.session_state["last_quiz_result"] = None
     st.session_state["quiz_saved"] = False
@@ -160,6 +180,126 @@ def build_book_lookup(books_df: pd.DataFrame) -> dict[int, dict]:
         int(row["id"]): row.to_dict()
         for _, row in books_df.iterrows()
     }
+
+
+def reset_recommendation_chat_session(user_id: int | None = None) -> None:
+    owner_id = st.session_state.get("recommendation_chat_owner_id")
+    session_id = st.session_state.get("recommendation_chat_session_id")
+    if session_id and owner_id and (user_id is None or int(owner_id) == int(user_id)):
+        try:
+            delete_recommendation_session(RECOMMENDATION_API_BASE_URL, str(session_id))
+        except RecommendationAPIError:
+            LOGGER.warning("Unable to delete recommendation chat session %s", session_id)
+
+    st.session_state["recommendation_chat_session_id"] = None
+    st.session_state["recommendation_chat_messages"] = []
+    st.session_state["recommendation_chat_owner_id"] = None
+    st.session_state["recommendation_chat_error"] = ""
+    st.session_state["recommendation_chat_used_fallback"] = False
+
+
+def ensure_recommendation_chat_owner(user_id: int) -> None:
+    owner_id = st.session_state.get("recommendation_chat_owner_id")
+    if owner_id is None:
+        st.session_state["recommendation_chat_owner_id"] = int(user_id)
+        return
+    if int(owner_id) != int(user_id):
+        reset_recommendation_chat_session()
+        st.session_state["recommendation_chat_owner_id"] = int(user_id)
+
+
+def build_backend_recommendation_records(backend_recommendations: list[Any], books_df: pd.DataFrame) -> list[dict[str, Any]]:
+    if books_df.empty or not backend_recommendations:
+        return []
+
+    working_df = books_df.copy()
+    working_df["normalized_title"] = working_df["title"].apply(normalize_text)
+    working_df["normalized_author"] = working_df["author"].apply(normalize_text)
+    matched_records: list[dict[str, Any]] = []
+    used_ids: set[int] = set()
+
+    for item in backend_recommendations:
+        title = ""
+        author = ""
+        reason = ""
+        if isinstance(item, dict):
+            title = str(item.get("title") or item.get("book_title") or item.get("name") or "").strip()
+            author = str(item.get("author") or "").strip()
+            reason = str(item.get("reason") or item.get("why") or item.get("explanation") or "").strip()
+        elif isinstance(item, str):
+            title = item.strip()
+        if not title:
+            continue
+
+        normalized_title = normalize_text(title)
+        normalized_author = normalize_text(author)
+        candidates = working_df[working_df["normalized_title"] == normalized_title]
+        if candidates.empty and normalized_title:
+            candidates = working_df[working_df["normalized_title"].str.contains(normalized_title, na=False)]
+        if candidates.empty and normalized_author:
+            candidates = working_df[working_df["normalized_author"] == normalized_author]
+        if candidates.empty:
+            continue
+
+        for _, row in candidates.iterrows():
+            book_id = int(row["id"])
+            if book_id in used_ids:
+                continue
+            record = row.to_dict()
+            record["simple_recommendation_reason"] = reason or "Recommended from your conversation with StoryShelf."
+            matched_records.append(record)
+            used_ids.add(book_id)
+            break
+
+    return matched_records
+
+
+def generate_fallback_recommendations(profile: dict[str, Any], books_df: pd.DataFrame, message: str) -> list[dict[str, Any]]:
+    if books_df.empty:
+        return []
+
+    fallback_preferences = {
+        "grade": profile.get("class_grade", ""),
+        "book_type": "any",
+        "topics": message,
+        "length_type": "any",
+        "reading_level": profile.get("reading_level", "easy") or "easy",
+    }
+    recommendations = get_recommendations_cached(
+        books_df,
+        tuple(sorted((str(key), str(value)) for key, value in fallback_preferences.items())),
+        top_n=5,
+    )
+    return recommendations.to_dict(orient="records")
+
+
+def store_recommendation_records_for_student(
+    user_id: int,
+    profile: dict[str, Any],
+    recommendation_records: list[dict[str, Any]],
+    *,
+    source: str,
+    message: str,
+    backend_session_id: str | None = None,
+) -> None:
+    st.session_state["recommended_books"] = recommendation_records
+    st.session_state["last_recommendation_signature"] = None
+    st.session_state["active_session_id"] = create_recommendation_session(
+        DB_CONFIG,
+        student_id=int(user_id),
+        grade=profile.get("class_grade", ""),
+        preferences={
+            "source": source,
+            "message": message,
+            "backend_session_id": backend_session_id or "",
+        },
+        recommended_books=recommendation_records,
+    )
+    st.session_state["latest_lesson"] = None
+    st.session_state["feedback_saved"] = False
+    st.session_state["selected_book_id"] = None
+    st.session_state["last_quiz_result"] = None
+    st.session_state["quiz_saved"] = False
 
 
 def get_current_user() -> dict | None:
@@ -190,6 +330,9 @@ def set_current_page(page: str) -> None:
 
 def logout_user() -> None:
     auth_view = st.session_state.get("auth_view", "login")
+    auth_user = st.session_state.get("auth_user")
+    if auth_user and auth_user.get("id"):
+        reset_recommendation_chat_session(int(auth_user["id"]))
     st.session_state.clear()
     setup_page()
     st.session_state["auth_user"] = None
@@ -772,6 +915,114 @@ def my_books_page() -> None:
         st.dataframe(finished_books.drop(columns=["book_id"], errors="ignore"), use_container_width=True, hide_index=True)
 
 
+def render_recommendation_chat(user: dict[str, Any], profile: dict[str, Any], books_df: pd.DataFrame) -> None:
+    ensure_recommendation_chat_owner(int(user["id"]))
+    render_section_heading(
+        "Recommendation chat",
+        "Tell StoryShelf what you want to read. You can chat naturally here, or use the quick path below.",
+    )
+    with st.container(border=True):
+        top_left, top_right = st.columns([1, 1])
+        with top_left:
+            render_status_tip(
+                "How it works",
+                "Ask for a kind of story, a topic, or a reading mood. StoryShelf will keep the conversation going and suggest books.",
+            )
+        with top_right:
+            if st.button("Start new recommendation chat", key="start_new_recommendation_chat", use_container_width=True):
+                reset_recommendation_chat_session(int(user["id"]))
+                st.session_state["recommended_books"] = []
+                st.session_state["selected_book_id"] = None
+                st.session_state["active_session_id"] = None
+                st.rerun()
+
+        chat_messages = st.session_state.get("recommendation_chat_messages", [])
+        if not chat_messages:
+            render_chat_bubble(
+                f"Hi {profile['full_name']}! Tell me what kind of book you want, like mystery, animals, space, funny stories, or short books.",
+                speaker="bot",
+            )
+        else:
+            for chat_message in chat_messages:
+                render_chat_bubble(
+                    str(chat_message.get("content", "")),
+                    speaker="user" if chat_message.get("role") == "user" else "bot",
+                )
+
+        chat_error = st.session_state.get("recommendation_chat_error", "")
+        if chat_error:
+            st.warning(chat_error)
+
+        if st.session_state.get("recommendation_chat_used_fallback"):
+            st.info("The live recommendation service was not fully available, so StoryShelf matched books from your library here.")
+
+        with st.form("recommendation_chat_form"):
+            student_message = st.text_input(
+                "What would you like to read?",
+                placeholder="I want a short science book about space.",
+            )
+            send_message = st.form_submit_button("Send", type="primary", use_container_width=True)
+
+        if send_message:
+            message = student_message.strip()
+            if not message:
+                st.error("Type a message first so StoryShelf knows what to recommend.")
+                return
+
+            current_messages = list(st.session_state.get("recommendation_chat_messages", []))
+            current_messages.append({"role": "user", "content": message})
+            st.session_state["recommendation_chat_messages"] = current_messages
+
+            session_id = str(st.session_state.get("recommendation_chat_session_id") or create_client_session_id())
+            st.session_state["recommendation_chat_session_id"] = session_id
+            st.session_state["recommendation_chat_owner_id"] = int(user["id"])
+            st.session_state["recommendation_chat_error"] = ""
+            st.session_state["recommendation_chat_used_fallback"] = False
+
+            recommendation_records: list[dict[str, Any]] = []
+            assistant_text = ""
+            backend_session_id = session_id
+
+            try:
+                api_response = send_recommendation_message(RECOMMENDATION_API_BASE_URL, message, session_id)
+                backend_session_id = api_response.session_id
+                st.session_state["recommendation_chat_session_id"] = backend_session_id
+                assistant_text = api_response.assistant_message
+                recommendation_records = build_backend_recommendation_records(api_response.recommendations, books_df)
+                if not recommendation_records:
+                    recommendation_records = generate_fallback_recommendations(profile, books_df, message)
+                    if recommendation_records:
+                        assistant_text = (
+                            assistant_text + " "
+                            + "I also matched a few books from your library catalog so you can keep going."
+                        ).strip()
+                        st.session_state["recommendation_chat_used_fallback"] = True
+            except RecommendationAPIError:
+                recommendation_records = generate_fallback_recommendations(profile, books_df, message)
+                if recommendation_records:
+                    assistant_text = "The recommendation service is unavailable right now, so I matched a few books from your library catalog here."
+                    st.session_state["recommendation_chat_used_fallback"] = True
+                else:
+                    assistant_text = "The recommendation service is unavailable right now. Please try again, or use the quick reading choices below."
+                    st.session_state["recommendation_chat_error"] = assistant_text
+
+            if assistant_text:
+                current_messages = list(st.session_state.get("recommendation_chat_messages", []))
+                current_messages.append({"role": "assistant", "content": assistant_text})
+                st.session_state["recommendation_chat_messages"] = current_messages
+
+            if recommendation_records:
+                store_recommendation_records_for_student(
+                    int(user["id"]),
+                    profile,
+                    recommendation_records,
+                    source="backend_chat" if not st.session_state.get("recommendation_chat_used_fallback") else "backend_chat_fallback",
+                    message=message,
+                    backend_session_id=backend_session_id,
+                )
+            st.rerun()
+
+
 def student_page() -> None:
     user = enforce_role({"student"})
     if not user:
@@ -793,6 +1044,8 @@ def student_page() -> None:
     if not profile:
         return
 
+    render_recommendation_chat(user, profile, books_df)
+
     finder_state = st.session_state.setdefault(
         "finder_preferences",
         {
@@ -808,14 +1061,14 @@ def student_page() -> None:
     finder_state.setdefault("reading_level", profile.get("reading_level", "easy") or "easy")
     finder_step = int(st.session_state.get("finder_step", 1))
 
-    render_chat_bubble(f"Hi {profile['full_name']}! I will ask a few quick questions and then suggest books that match your reading style.")
+    render_chat_bubble(f"If you want a faster backup path, I can also suggest books from a few quick choices below.")
     render_progress_steps(
         ["Choose a style", "Share topics", "Pick a length", "Pick reading comfort", "See your books"],
         min(finder_step, 5),
     )
 
     with st.container(border=True):
-        render_section_heading("Your reading choices", "We will keep it simple and show one main choice at a time.")
+        render_section_heading("Quick recommendation path", "Use this if you want simple pickers instead of a free chat.")
         if profile.get("preferred_language"):
             st.caption(f"Preferred language: {profile['preferred_language']}")
 

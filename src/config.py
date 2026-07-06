@@ -31,6 +31,13 @@ class DatabaseConfig:
         return self.backend == "sqlite"
 
 
+def get_recommendation_api_base_url() -> str:
+    return os.getenv(
+        "RECOMMENDATION_API_BASE_URL",
+        "https://library-guide-w3svdnyxoq-el.a.run.app",
+    ).strip().rstrip("/")
+
+
 def _is_writable_database_path(path: Path) -> bool:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

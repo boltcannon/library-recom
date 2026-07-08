@@ -12,6 +12,7 @@ from src.config import get_database_config
 from src.config import get_recommendation_api_base_url
 from src.database import (
     authenticate_user,
+    create_lesson_sequence,
     create_user,
     create_recommendation_session,
     ensure_admin_account,
@@ -20,6 +21,7 @@ from src.database import (
     fetch_all_books,
     fetch_book_by_id,
     fetch_dashboard_metrics,
+    fetch_latest_lesson_sequence_for_user,
     fetch_latest_reviewed_lesson,
     fetch_saved_book_statuses_for_user,
     fetch_student_dashboard_data_for_user,
@@ -29,21 +31,25 @@ from src.database import (
     init_db,
     log_catalog_upload,
     log_generated_lesson,
+    log_lesson_sequence_attempt,
     log_selected_book,
     save_quiz_result,
     save_reviewed_lesson,
     save_student_profile_for_user,
     save_user_feedback,
+    update_lesson_sequence,
     update_user_active_status,
     update_user_role,
     update_saved_book_status_for_user,
 )
 from src.ingest_catalog import ingest_catalog
 from src.lesson_generator import (
-    generate_lesson,
-    generate_quiz_questions,
-    grade_quiz_answers,
+    evaluate_activity_feedback,
+    evaluate_open_ended_feedback,
+    generate_learning_sequence,
+    generate_sequence_quiz,
     lesson_sections_to_text,
+    score_sequence_quiz,
     suggest_concepts,
 )
 from src.recommendation_api import (
@@ -136,6 +142,7 @@ def setup_page() -> None:
     st.session_state.setdefault("quiz_saved", False)
     st.session_state.setdefault("student_profile_record", None)
     st.session_state.setdefault("last_recommendation_signature", None)
+    st.session_state.setdefault("restored_sequence_id", None)
     st.session_state.setdefault("auth_view", "login")
     st.session_state.setdefault("nav_page", STUDENT_PROGRESS_PAGE)
     st.session_state.setdefault("pending_nav_page", None)
@@ -166,6 +173,7 @@ def reset_student_learning_state() -> None:
     st.session_state["last_quiz_result"] = None
     st.session_state["quiz_saved"] = False
     st.session_state["last_recommendation_signature"] = None
+    st.session_state["restored_sequence_id"] = None
     st.session_state["finder_step"] = 1
     st.session_state["finder_preferences"] = {
         "book_type": "story",
@@ -329,6 +337,81 @@ def resolve_final_concept(manual_concept: str, quick_pick: str, concept_suggesti
     return concept_suggestions[0].strip() if concept_suggestions else ""
 
 
+def hydrate_latest_lesson_from_sequence(sequence: dict[str, Any]) -> dict[str, Any]:
+    quiz_score = sequence.get("quiz_score")
+    total_questions = sequence.get("total_questions")
+    quiz_payload = sequence.get("quiz_payload", []) or []
+    quiz_answers = sequence.get("quiz_answers", []) or []
+    quiz_result = None
+    if quiz_payload and quiz_answers:
+        quiz_result = score_sequence_quiz(quiz_payload, [str(answer) for answer in quiz_answers])
+    elif quiz_score is not None and total_questions:
+        percentage = round((float(quiz_score) / float(total_questions)) * 100.0, 1) if total_questions else 0.0
+        passed = bool(sequence.get("passed"))
+        quiz_result = {
+            "score": int(quiz_score),
+            "total_questions": int(total_questions),
+            "percentage": percentage,
+            "passed": passed,
+            "results": [],
+            "summary": "Great work. You passed the quiz." if passed else "Good try. Review the lesson and try the quiz again.",
+            "review_summary": (
+                "You passed the learning check. Keep using the same book idea and concept connection."
+                if passed
+                else "Review the concept, the key examples, and one real book detail before trying again."
+            ),
+        }
+
+    return {
+        "book_id": int(sequence["book_id"]),
+        "subject": sequence.get("subject", ""),
+        "concept": sequence.get("concept", ""),
+        "requested_concept": sequence.get("concept", ""),
+        "grade": "",
+        "generated_lesson": sequence.get("lesson_content", ""),
+        "warning": "",
+        "sections": [],
+        "teach_sections": [],
+        "fit_result": {"level": sequence.get("fit_level", "")},
+        "lesson_log_id": sequence.get("lesson_id"),
+        "sequence_id": int(sequence["id"]),
+        "reflect_question": {"prompt": sequence.get("reflect_question", "")} if sequence.get("reflect_question") else None,
+        "reflect_answer": sequence.get("reflect_answer", "") or "",
+        "reflect_feedback": sequence.get("reflect_feedback"),
+        "activity": {"prompt": sequence.get("activity_prompt", "")} if sequence.get("activity_prompt") else None,
+        "activity_answer": sequence.get("activity_answer", "") or "",
+        "activity_feedback": sequence.get("activity_feedback"),
+        "quiz_questions": quiz_payload,
+        "quiz_result": quiz_result,
+        "quiz_attempts": [],
+        "retry_count": int(sequence.get("retry_count", 0) or 0),
+        "passed": bool(sequence.get("passed")),
+        "mode": "lesson",
+    }
+
+
+def restore_latest_sequence_state(user_id: int, selected_book_id: int, book: dict[str, Any], profile: dict[str, Any]) -> None:
+    persisted_sequence = fetch_latest_lesson_sequence_for_user(DB_CONFIG, user_id, book_id=selected_book_id)
+    if not persisted_sequence:
+        return
+    if st.session_state.get("restored_sequence_id") == persisted_sequence["id"]:
+        return
+
+    latest_lesson = hydrate_latest_lesson_from_sequence(persisted_sequence)
+    latest_lesson["teach_sections"] = generate_learning_sequence(
+        book=book,
+        subject=persisted_sequence.get("subject", "English"),
+        concept=persisted_sequence.get("concept", ""),
+        grade=profile["class_grade"],
+    ).get("teach_sections", [])
+    latest_lesson["sections"] = latest_lesson["teach_sections"]
+    st.session_state["latest_lesson"] = latest_lesson
+    st.session_state["story_learning_subject"] = persisted_sequence.get("subject", "English")
+    st.session_state["story_learning_quick_pick"] = "I want to type my own concept"
+    st.session_state["story_learning_concept"] = persisted_sequence.get("concept", "")
+    st.session_state["restored_sequence_id"] = persisted_sequence["id"]
+
+
 def get_current_user() -> dict | None:
     auth_user = st.session_state.get("auth_user")
     if not auth_user or not auth_user.get("id"):
@@ -371,6 +454,10 @@ def get_student_resume_book(user_id: int) -> dict | None:
     latest_lesson = st.session_state.get("latest_lesson")
     if latest_lesson and latest_lesson.get("book_id"):
         return fetch_book_by_id(DB_CONFIG, int(latest_lesson["book_id"]))
+
+    persisted_sequence = fetch_latest_lesson_sequence_for_user(DB_CONFIG, user_id)
+    if persisted_sequence and persisted_sequence.get("book_id"):
+        return fetch_book_by_id(DB_CONFIG, int(persisted_sequence["book_id"]))
 
     selected_book_id = st.session_state.get("selected_book_id")
     if selected_book_id:
@@ -710,8 +797,8 @@ def home_page() -> None:
             [
                 {"label": "Books explored", "value": str(dashboard["total_books_explored"]), "note": "Stories you have opened or chosen"},
                 {"label": "Saved books", "value": str(dashboard["total_books_saved"]), "note": "Books waiting for your next visit"},
-                {"label": "Books read", "value": str(dashboard["total_books_marked_as_read"]), "note": "Reading wins you have collected"},
-                {"label": "Lessons made", "value": str(dashboard["total_lessons_generated"]), "note": "Story-based lessons generated so far"},
+                {"label": "Lessons started", "value": str(dashboard["total_lessons_generated"]), "note": "Guided learning journeys you began"},
+                {"label": "Quizzes passed", "value": str(dashboard["total_quizzes_passed"]), "note": "Learning checks you completed successfully"},
             ]
         )
         col1, col2 = st.columns([1.05, 0.95])
@@ -725,6 +812,8 @@ def home_page() -> None:
                 render_status_tip("Favorite topics", dashboard["favorite_topics"])
             else:
                 render_status_tip("Favorite topics", "Add favorite topics in your profile to get sharper recommendations.")
+            if dashboard.get("recent_concepts_learned"):
+                render_status_tip("Recent concepts", ", ".join(dashboard["recent_concepts_learned"]))
         with col2:
             render_section_heading("Recent activity", "Your newest actions show up here so it is easy to continue where you left off.")
             if dashboard["recent_activity"].empty:
@@ -808,8 +897,8 @@ def student_dashboard_page() -> None:
         [
             {"label": "Books explored", "value": str(dashboard["total_books_explored"]), "note": "Books you visited or selected"},
             {"label": "Saved books", "value": str(dashboard["total_books_saved"]), "note": "Stories saved for later"},
-            {"label": "Books read", "value": str(dashboard["total_books_marked_as_read"]), "note": "Books you marked as read"},
-            {"label": "Lessons completed", "value": str(dashboard["total_lessons_generated"]), "note": "Story lessons created from your books"},
+            {"label": "Lessons started", "value": str(dashboard["total_lessons_generated"]), "note": "Guided learning sequences you began"},
+            {"label": "Quizzes passed", "value": str(dashboard["total_quizzes_passed"]), "note": "Pass checks you completed successfully"},
         ]
     )
 
@@ -825,6 +914,9 @@ def student_dashboard_page() -> None:
                 else "Generate a lesson and try the quiz to start building your learning score."
             ),
         )
+    render_status_tip("Lessons completed", str(dashboard["total_lessons_completed"]))
+    if dashboard.get("recent_concepts_learned"):
+        render_status_tip("Recent concepts learned", ", ".join(dashboard["recent_concepts_learned"]))
 
     render_section_heading("Recent activity", "These are the newest things you did across reading, lessons, and quiz practice.")
     if dashboard["recent_activity"].empty:
@@ -841,7 +933,7 @@ def student_dashboard_page() -> None:
         dashboard["reading_history"].drop(columns=["book_id"], errors="ignore"),
         dashboard["recommended_history"],
         dashboard["selected_history"].drop(columns=["book_id"], errors="ignore"),
-        dashboard["lesson_history"].drop(columns=["book_id"], errors="ignore"),
+        dashboard["lesson_history"].drop(columns=["book_id", "sequence_id"], errors="ignore"),
         dashboard["quiz_history"].drop(columns=["book_id"], errors="ignore"),
     ]
     empty_messages = [
@@ -1313,7 +1405,7 @@ def story_learning_page() -> None:
         user=user,
         current_page=STUDENT_LEARN_PAGE,
         title="Learn",
-        body="Turn a selected book into a simple lesson connected to a school subject, then try a short quiz.",
+        body="Turn a selected book into a guided learning sequence with teaching, reflection, practice, and a final pass check.",
         kicker="Lesson builder",
     )
     books_df = fetch_all_books(DB_CONFIG)
@@ -1331,6 +1423,11 @@ def story_learning_page() -> None:
         if int(book.get("id", -1)) in book_lookup
     ]
     default_book_id = st.session_state.get("selected_book_id")
+    if not default_book_id:
+        persisted_resume_sequence = fetch_latest_lesson_sequence_for_user(DB_CONFIG, int(user["id"]))
+        if persisted_resume_sequence and persisted_resume_sequence.get("book_id"):
+            default_book_id = int(persisted_resume_sequence["book_id"])
+            st.session_state["selected_book_id"] = default_book_id
     recommended_ids = [book["id"] for book in recommended_books]
 
     if recommended_ids:
@@ -1365,12 +1462,14 @@ def story_learning_page() -> None:
         st.error("The selected book could not be loaded.")
         return
 
+    restore_latest_sequence_state(int(user["id"]), int(selected_book_id), book, profile)
+
     with right_col:
         render_book_snapshot(book, "Selected book")
 
-    render_chat_bubble(f"Nice choice, {profile['full_name']}. Pick a subject and concept, then try the quiz after the lesson.")
+    render_chat_bubble(f"Nice choice, {profile['full_name']}. Pick a subject and concept, then move through Learn, Reflect, Practice, and Quiz.")
     with st.container(border=True):
-        render_section_heading("Build the lesson", "Choose the subject first, then decide what you want to learn.")
+        render_section_heading("Build the learning sequence", "Choose the subject first, then decide what you want to learn.")
         subject = st.selectbox("Which subject do you want to learn?", ["Math", "Science", "English", "Social Science", "Values"], key="story_learning_subject")
         concept_suggestions = suggest_concepts(book, subject)
         st.info("Possible concept ideas: " + ", ".join(concept_suggestions))
@@ -1384,8 +1483,8 @@ def story_learning_page() -> None:
         if selected_concept:
             st.caption(f"Final concept: {selected_concept}")
 
-    if st.button("Create Lesson", type="primary", use_container_width=True):
-        with st.spinner("Generating lesson..."):
+    if st.button("Create Learning Sequence", type="primary", use_container_width=True):
+        with st.spinner("Building your learning sequence..."):
             session_id = st.session_state.get("active_session_id")
             if session_id is None:
                 fallback_preferences = st.session_state.get("student_profile", {})
@@ -1398,14 +1497,14 @@ def story_learning_page() -> None:
                 )
                 st.session_state["active_session_id"] = session_id
 
-            lesson = generate_lesson(
+            sequence = generate_learning_sequence(
                 book=book,
                 subject=subject,
                 concept=selected_concept,
                 grade=profile["class_grade"],
             )
 
-        lesson_text = lesson_sections_to_text(lesson["sections"])
+        lesson_text = sequence.get("sequence_text") or lesson_sections_to_text(sequence.get("teach_sections", []))
         log_selected_book(DB_CONFIG, session_id, selected_book_id, student_id=int(user["id"]))
         lesson_log_id = log_generated_lesson(
             DB_CONFIG,
@@ -1414,34 +1513,53 @@ def story_learning_page() -> None:
             book_id=selected_book_id,
             grade=profile["class_grade"],
             subject=subject,
-            concept=lesson.get("chosen_concept", selected_concept),
+            concept=sequence.get("chosen_concept", selected_concept),
             generated_lesson=lesson_text,
         )
-        quiz_questions = generate_quiz_questions(
-            book,
-            subject,
-            lesson.get("chosen_concept", selected_concept),
-            profile["class_grade"],
-            lesson.get("fit_result", {}),
+        sequence_id = create_lesson_sequence(
+            DB_CONFIG,
+            lesson_id=lesson_log_id,
+            user_id=int(user["id"]),
+            book_id=selected_book_id,
+            subject=subject,
+            concept=sequence.get("chosen_concept", selected_concept),
+            fit_level=sequence.get("fit_result", {}).get("level", ""),
+            lesson_content=lesson_text,
+            reflect_question=(sequence.get("reflect_question") or {}).get("prompt"),
+            activity_prompt=(sequence.get("activity") or {}).get("prompt"),
+            quiz_payload=sequence.get("quiz_questions", []),
         )
         st.session_state["latest_lesson"] = {
             "book_id": selected_book_id,
             "subject": subject,
-            "concept": lesson.get("chosen_concept", selected_concept),
+            "concept": sequence.get("chosen_concept", selected_concept),
             "requested_concept": selected_concept,
             "grade": profile["class_grade"],
             "generated_lesson": lesson_text,
-            "warning": lesson["warning"],
-            "sections": lesson["sections"],
-            "fit_result": lesson.get("fit_result", {}),
+            "warning": sequence.get("warning", ""),
+            "sections": sequence.get("teach_sections", []),
+            "teach_sections": sequence.get("teach_sections", []),
+            "fit_result": sequence.get("fit_result", {}),
             "lesson_log_id": lesson_log_id,
-            "quiz_questions": quiz_questions,
-            "mode": lesson.get("mode", "lesson"),
+            "sequence_id": sequence_id,
+            "reflect_question": sequence.get("reflect_question"),
+            "reflect_answer": "",
+            "reflect_feedback": None,
+            "activity": sequence.get("activity"),
+            "activity_answer": "",
+            "activity_feedback": None,
+            "quiz_questions": sequence.get("quiz_questions", []),
+            "quiz_result": None,
+            "quiz_attempts": [],
+            "retry_count": 0,
+            "passed": False,
+            "mode": sequence.get("mode", "lesson"),
         }
         st.session_state["feedback_saved"] = False
         st.session_state["last_quiz_result"] = None
         st.session_state["quiz_saved"] = False
-        render_chat_bubble("Your lesson is ready below. When you finish reading, try the quick quiz.")
+        st.session_state["restored_sequence_id"] = sequence_id
+        render_chat_bubble("Your learning sequence is ready below. Start at Stage 1 and work your way forward.")
 
     latest_lesson = st.session_state.get("latest_lesson")
     if (
@@ -1451,74 +1569,240 @@ def story_learning_page() -> None:
         and latest_lesson.get("requested_concept") == selected_concept
     ):
         lesson_mode = latest_lesson.get("mode", "lesson")
+        fit_level = latest_lesson.get("fit_result", {}).get("level")
         if lesson_mode == "fit_warning":
-            render_section_heading("Try a better concept", "This concept does not fit the book strongly enough for a full lesson yet.")
+            render_section_heading("Try a better concept", "This concept does not fit the book well enough for a full learning sequence yet.")
         else:
-            render_section_heading("Your lesson", "Read the idea, examples, activity, and questions in order.")
+            render_section_heading("Your learning sequence", "Work through each stage in order to build understanding step by step.")
         st.write(f"**Lesson concept:** {latest_lesson.get('concept', selected_concept)}")
 
         if latest_lesson["warning"]:
             st.warning(latest_lesson["warning"])
-        elif latest_lesson.get("fit_result", {}).get("level") == "medium":
-            st.info("This concept is a good enough match, so StoryShelf built a lesson with the strongest ideas from the book.")
-        elif latest_lesson.get("fit_result", {}).get("level") == "weak":
-            st.info("This is a lighter connection, so the lesson stays simple and close to the title and abstract.")
+        elif fit_level == "medium":
+            st.info("This concept is a good match, so the sequence uses the clearest ideas from the book.")
+        elif fit_level == "weak":
+            st.info("This is a lighter match, so the sequence keeps the learning simple and close to the title and abstract.")
         elif not latest_lesson.get("fit_result", {}).get("is_strong", True):
             suggested = latest_lesson.get("fit_result", {}).get("suggested_concepts", [])
             if suggested:
                 st.info("Better concepts to try: " + ", ".join(suggested))
 
+        stage_index = 1
+        if latest_lesson.get("reflect_feedback"):
+            stage_index = 2
+        if latest_lesson.get("activity_feedback"):
+            stage_index = 3
+        if latest_lesson.get("quiz_questions") and lesson_mode != "fit_warning":
+            stage_index = 4
+        if latest_lesson.get("quiz_result"):
+            stage_index = 5
+        render_progress_steps(["Learn", "Reflect", "Practice", "Quiz", "Result"], stage_index)
+
+        render_section_heading("Stage 1: Learn", "Start with the teaching and examples.")
         with st.container(border=True):
-            render_lesson_sections(latest_lesson["sections"])
+            render_lesson_sections(latest_lesson.get("teach_sections", latest_lesson["sections"]))
 
         if lesson_mode != "fit_warning":
-            st.info("This lesson can be reviewed by an admin before wider classroom use.")
+            st.caption("This learning sequence can still be reviewed by an admin before wider classroom use.")
+
+        reflect_question = latest_lesson.get("reflect_question")
+        if lesson_mode != "fit_warning" and reflect_question:
+            render_section_heading("Stage 2: Reflect", "Answer one short question to show what you understood.")
+            with st.container(border=True):
+                st.write(reflect_question["prompt"])
+                with st.form(f"reflect_form_{latest_lesson['lesson_log_id']}"):
+                    reflect_answer = st.text_area(
+                        "Your answer",
+                        value=latest_lesson.get("reflect_answer", ""),
+                        placeholder="Write 2 or 3 simple sentences.",
+                    )
+                    reflect_submitted = st.form_submit_button("Get feedback", type="primary", use_container_width=True)
+                if reflect_submitted:
+                    latest_lesson["reflect_answer"] = reflect_answer
+                    latest_lesson["reflect_feedback"] = evaluate_open_ended_feedback(
+                        book,
+                        subject,
+                        latest_lesson.get("concept", selected_concept),
+                        latest_lesson.get("fit_result", {}),
+                        reflect_answer,
+                    )
+                    if latest_lesson.get("sequence_id"):
+                        update_lesson_sequence(
+                            DB_CONFIG,
+                            int(latest_lesson["sequence_id"]),
+                            reflect_answer=reflect_answer,
+                            reflect_feedback=latest_lesson["reflect_feedback"],
+                            status="reflect_done",
+                        )
+                    st.session_state["latest_lesson"] = latest_lesson
+                    st.rerun()
+
+            if latest_lesson.get("reflect_feedback"):
+                feedback = latest_lesson["reflect_feedback"]
+                with st.container(border=True):
+                    st.write(f"**What is correct:** {feedback['what_is_correct']}")
+                    st.write(f"**What is missing:** {feedback['what_is_missing']}")
+                    st.write(f"**Hint:** {feedback['hint']}")
+                    st.success(feedback["encouragement"])
+
+        activity = latest_lesson.get("activity")
+        if lesson_mode != "fit_warning" and activity:
+            render_section_heading("Stage 3: Practice", "Use the concept yourself in one short activity.")
+            with st.container(border=True):
+                st.write(activity["prompt"])
+                with st.form(f"activity_form_{latest_lesson['lesson_log_id']}"):
+                    activity_answer = st.text_area(
+                        "Your activity answer",
+                        value=latest_lesson.get("activity_answer", ""),
+                        placeholder="Use the book context to show your thinking.",
+                    )
+                    activity_submitted = st.form_submit_button("Check activity", type="primary", use_container_width=True)
+                if activity_submitted:
+                    latest_lesson["activity_answer"] = activity_answer
+                    latest_lesson["activity_feedback"] = evaluate_activity_feedback(
+                        book,
+                        subject,
+                        latest_lesson.get("concept", selected_concept),
+                        latest_lesson.get("fit_result", {}),
+                        activity_answer,
+                    )
+                    if latest_lesson.get("sequence_id"):
+                        update_lesson_sequence(
+                            DB_CONFIG,
+                            int(latest_lesson["sequence_id"]),
+                            activity_answer=activity_answer,
+                            activity_feedback=latest_lesson["activity_feedback"],
+                            status="practice_done",
+                        )
+                    st.session_state["latest_lesson"] = latest_lesson
+                    st.rerun()
+
+            if latest_lesson.get("activity_feedback"):
+                feedback = latest_lesson["activity_feedback"]
+                with st.container(border=True):
+                    st.write(f"**What is correct:** {feedback['what_is_correct']}")
+                    st.write(f"**What can improve:** {feedback['what_can_improve']}")
+                    st.write(f"**Hint:** {feedback['hint']}")
+                    st.success(feedback["encouragement"])
 
         quiz_questions = latest_lesson.get("quiz_questions", [])
-        if quiz_questions:
-            render_section_heading("Quiz", "Answer these quick questions to see what you understood.")
+        if quiz_questions and lesson_mode != "fit_warning":
+            render_section_heading("Stage 4: Quiz", "Finish the final check to see whether you pass this learning sequence.")
             with st.container(border=True):
-                with st.form("lesson_quiz_form"):
-                    quiz_answers = []
+                with st.form(f"lesson_quiz_form_{latest_lesson['lesson_log_id']}_{latest_lesson.get('retry_count', 0)}"):
+                    quiz_answers: list[str] = []
                     for index, question in enumerate(quiz_questions, start=1):
-                        quiz_answers.append(
-                            st.radio(
-                                f"{index}. {question['question']}",
-                                question["options"],
-                                key=f"quiz_q_{latest_lesson['lesson_log_id']}_{index}",
+                        label = f"{index}. {question['question']}"
+                        if question.get("question_type") == "short":
+                            quiz_answers.append(
+                                st.text_input(
+                                    label,
+                                    key=f"quiz_short_{latest_lesson['lesson_log_id']}_{latest_lesson.get('retry_count', 0)}_{index}",
+                                )
                             )
-                        )
-                    quiz_submitted = st.form_submit_button("Check Quiz", type="primary", use_container_width=True)
+                        else:
+                            quiz_answers.append(
+                                st.radio(
+                                    label,
+                                    question["options"],
+                                    key=f"quiz_mcq_{latest_lesson['lesson_log_id']}_{latest_lesson.get('retry_count', 0)}_{index}",
+                                )
+                            )
+                    quiz_submitted = st.form_submit_button("Finish quiz", type="primary", use_container_width=True)
 
             if quiz_submitted:
-                quiz_result = grade_quiz_answers(quiz_questions, quiz_answers)
-                st.session_state["last_quiz_result"] = quiz_result
-                if not st.session_state.get("quiz_saved"):
-                    save_quiz_result(
+                quiz_result = score_sequence_quiz(quiz_questions, quiz_answers)
+                latest_lesson["quiz_result"] = quiz_result
+                latest_lesson["quiz_attempts"] = latest_lesson.get("quiz_attempts", []) + [quiz_result]
+                latest_lesson["passed"] = bool(quiz_result.get("passed"))
+                if latest_lesson.get("sequence_id"):
+                    update_lesson_sequence(
                         DB_CONFIG,
-                        student_id=int(user["id"]),
-                        book_id=selected_book_id,
-                        lesson_log_id=latest_lesson.get("lesson_log_id"),
-                        score=quiz_result["score"],
+                        int(latest_lesson["sequence_id"]),
+                        quiz_payload=quiz_questions,
+                        quiz_answers=quiz_answers,
+                        quiz_score=quiz_result["score"],
                         total_questions=quiz_result["total_questions"],
-                        answers=quiz_result["results"],
+                        passed=bool(quiz_result.get("passed")),
+                        retry_count=int(latest_lesson.get("retry_count", 0)),
+                        status="passed" if quiz_result.get("passed") else "quiz_failed",
                     )
-                    st.session_state["quiz_saved"] = True
-
-            if st.session_state.get("last_quiz_result"):
-                result = st.session_state["last_quiz_result"]
-                st.success(f"Quiz score: {result['score']} / {result['total_questions']}")
-                st.write(result["summary"])
-                for item in result["results"]:
-                    icon = "Correct" if item["is_correct"] else "Try again"
-                    with st.expander(f"{icon}: {item['question']}", expanded=not item["is_correct"]):
-                        st.write(f"**Your answer:** {item['selected_answer']}")
-                        st.write(f"**Correct answer:** {item['correct_answer']}")
-                        st.write(item["feedback"])
+                    log_lesson_sequence_attempt(
+                        DB_CONFIG,
+                        sequence_id=int(latest_lesson["sequence_id"]),
+                        attempt_number=int(latest_lesson.get("retry_count", 0)) + 1,
+                        reflect_answer=latest_lesson.get("reflect_answer"),
+                        reflect_feedback=latest_lesson.get("reflect_feedback"),
+                        activity_answer=latest_lesson.get("activity_answer"),
+                        activity_feedback=latest_lesson.get("activity_feedback"),
+                        quiz_payload=quiz_questions,
+                        quiz_answers=quiz_answers,
+                        quiz_score=quiz_result["score"],
+                        total_questions=quiz_result["total_questions"],
+                        passed=bool(quiz_result.get("passed")),
+                    )
+                st.session_state["latest_lesson"] = latest_lesson
+                st.session_state["last_quiz_result"] = quiz_result
+                save_quiz_result(
+                    DB_CONFIG,
+                    student_id=int(user["id"]),
+                    book_id=selected_book_id,
+                    lesson_log_id=latest_lesson.get("lesson_log_id"),
+                    score=quiz_result["score"],
+                    total_questions=quiz_result["total_questions"],
+                    answers=quiz_result["results"],
+                )
+                st.rerun()
         elif lesson_mode != "fit_warning":
             render_empty_state("No quiz yet", "Try a stronger concept match to unlock a more complete quiz for this book.", "📝")
 
-        render_section_heading("Quick feedback", "A little feedback helps improve the next lesson.")
+        if latest_lesson.get("quiz_result") and lesson_mode != "fit_warning":
+            result = latest_lesson["quiz_result"]
+            render_section_heading("Stage 5: Result", "See your score, review the answers, and retry if needed.")
+            if result.get("passed"):
+                st.success(f"You passed: {result['score']} / {result['total_questions']} ({result['percentage']}%)")
+            else:
+                st.warning(f"Not passed yet: {result['score']} / {result['total_questions']} ({result['percentage']}%)")
+            st.write(result["summary"])
+            st.write(result["review_summary"])
+            for item in result["results"]:
+                icon = "Correct" if item["is_correct"] else "Try again"
+                with st.expander(f"{icon}: {item['question']}", expanded=not item["is_correct"]):
+                    st.write(f"**Your answer:** {item['selected_answer'] or 'No answer'}")
+                    st.write(f"**Model answer:** {item['correct_answer']}")
+                    st.write(item["feedback"])
+
+            if not result.get("passed"):
+                if st.button("Retry with a simpler quiz", key=f"retry_quiz_{latest_lesson['lesson_log_id']}", use_container_width=True):
+                    latest_lesson["retry_count"] = int(latest_lesson.get("retry_count", 0)) + 1
+                    latest_lesson["quiz_questions"] = generate_sequence_quiz(
+                        book,
+                        subject,
+                        latest_lesson.get("concept", selected_concept),
+                        profile["class_grade"],
+                        latest_lesson.get("fit_result", {}),
+                        simplified=True,
+                    )
+                    latest_lesson["quiz_result"] = None
+                    latest_lesson["passed"] = False
+                    if latest_lesson.get("sequence_id"):
+                        update_lesson_sequence(
+                            DB_CONFIG,
+                            int(latest_lesson["sequence_id"]),
+                            quiz_payload=latest_lesson["quiz_questions"],
+                            quiz_answers=[],
+                            quiz_score=None,
+                            total_questions=None,
+                            passed=False,
+                            retry_count=int(latest_lesson["retry_count"]),
+                            status="quiz_retry",
+                            clear_quiz_result=True,
+                        )
+                    st.session_state["latest_lesson"] = latest_lesson
+                    st.session_state["last_quiz_result"] = None
+                    st.rerun()
+
+        render_section_heading("Quick feedback", "A little feedback helps improve the next learning sequence.")
         if st.session_state.get("feedback_saved"):
             st.success("Thanks for the feedback.")
 
@@ -1567,6 +1851,17 @@ def admin_dashboard_page() -> None:
             },
         ]
     )
+    render_metric_grid(
+        [
+            {"label": "Guided lessons started", "value": str(metrics["guided_lessons_started"]), "note": "Learning sequences students began"},
+            {"label": "Guided lessons completed", "value": str(metrics["guided_lessons_completed"]), "note": "Sequences that reached a scored quiz"},
+            {
+                "label": "Guided pass rate",
+                "value": f"{metrics['guided_pass_rate']}%" if metrics["guided_pass_rate"] is not None else "No quiz results yet",
+                "note": "Share of completed sequences that passed",
+            },
+        ]
+    )
     col1, col2 = st.columns(2)
     with col1:
         render_status_tip("Catalog focus", "Keep the book catalog fresh so recommendations stay meaningful for students.")
@@ -1580,6 +1875,14 @@ def admin_dashboard_page() -> None:
     else:
         with st.container(border=True):
             st.dataframe(most_selected_books, use_container_width=True, hide_index=True)
+
+
+    render_section_heading("Most attempted concepts", "See which ideas students practice most often in guided learning.")
+    if metrics["most_attempted_concepts"].empty:
+        render_empty_state("No guided lessons yet", "Concept activity will appear here once students begin guided learning sequences.", "🧠")
+    else:
+        with st.container(border=True):
+            st.dataframe(metrics["most_attempted_concepts"], use_container_width=True, hide_index=True)
 
 
 def admin_user_management_page() -> None:

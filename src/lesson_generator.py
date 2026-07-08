@@ -41,6 +41,7 @@ LESSON_HEADINGS = [
     "Why this concept fits this book",
     "Simple concept explanation",
     "Examples from this book",
+    "Quick reminder",
     "Try it yourself",
     "3 practice questions",
     "Answers",
@@ -158,6 +159,13 @@ def extract_reference_sentence(book: dict[str, Any]) -> str:
         if clean:
             return clean
     return abstract
+
+
+def build_book_context_phrase(book: dict[str, Any], limit: int = 3) -> str:
+    terms = extract_theme_terms(book, limit=limit)
+    if terms:
+        return ", ".join(terms)
+    return str(book.get("title", "the book")).strip() or "the book"
 
 
 def get_subject_profiles(subject: str) -> list[dict[str, Any]]:
@@ -286,10 +294,7 @@ def score_concept_fit(book: dict[str, Any], subject: str, concept: str) -> dict[
             fit_reason = f"This concept is possible because the book still gives some support through {', '.join(support_terms)}."
         else:
             fit_reason = f"This concept is a lighter match, but the title and abstract still give enough context to teach it simply."
-        warning = (
-            f"This is a lighter match for {chosen_concept}. "
-            + (f"Better choices: {', '.join(better_concepts)}." if better_concepts else "You can still continue with a simple lesson.")
-        )
+        warning = f"Light match for {chosen_concept}. " + (f"Better choices: {', '.join(better_concepts)}." if better_concepts else "You can still continue.")
     else:
         mismatch_reason = f"The title and abstract point in a different direction, so {chosen_concept} would feel forced here."
         if better_concepts:
@@ -337,9 +342,10 @@ Return the lesson in this exact section order:
 1. Why this concept fits this book
 2. Simple concept explanation
 3. Examples from this book
-4. Try it yourself
-5. 3 practice questions
-6. Answers
+4. Quick reminder
+5. Try it yourself
+6. 3 practice questions
+7. Answers
 
 Requirements:
 - Give 2 or 3 real examples.
@@ -355,6 +361,7 @@ def build_missing_abstract_result(book: dict[str, Any], subject: str) -> dict[st
         ("Why this concept fits this book", "This book does not give enough summary detail to build a strong concept lesson yet."),
         ("Simple concept explanation", "Choose a book with a clearer abstract so the lesson can connect to real book ideas."),
         ("Examples from this book", ["No reliable examples can be created because the abstract is missing."]),
+        ("Quick reminder", "A useful lesson needs a book summary that gives real support for the concept."),
         ("Try it yourself", "Pick another book that has a fuller abstract and try again."),
         ("3 practice questions", ["Why is the abstract important?", "What is missing here?", "What should you choose next?"]),
         ("Answers", ["The abstract gives the lesson real support.", "Important summary details are missing.", "Choose a book with a clearer abstract."]),
@@ -465,10 +472,12 @@ def _build_science_examples(book: dict[str, Any], concept: str) -> tuple[list[st
     sentence = extract_reference_sentence(book)
     terms = extract_theme_terms(book, limit=4)
     concept_text = concept.title()
+    term_a = terms[0] if terms else "the main science idea"
+    term_b = terms[1] if len(terms) > 1 else term_a
     examples = [
-        f"The abstract says: {sentence}",
-        f"That supports {concept_text} because it mentions ideas such as {', '.join(terms[:3]) or 'the main topic of the book'}.",
-        f"In science, we use real details from the book to observe, describe, and explain what is happening.",
+        f"The abstract points to science ideas like {', '.join(terms[:3]) or 'the main topic of the book'}. Those ideas help you study {concept_text}.",
+        f"When you use {concept_text}, you stay close to this real book detail: {sentence}",
+        f"This means your science thinking should explain what you notice, not add facts that the book never gave.",
     ]
     questions = [
         f"What science idea from the abstract connects best to {concept_text}?",
@@ -476,8 +485,8 @@ def _build_science_examples(book: dict[str, Any], concept: str) -> tuple[list[st
         "Why should a science explanation stay close to the book summary?",
     ]
     answers = [
-        f"A correct answer points to the main idea in the abstract, such as {terms[0] if terms else 'the key science topic'}.",
-        f"One possible answer is {terms[0] if terms else 'the main science word from the abstract'}.",
+        f"One possible answer is {term_a}, because it comes straight from the abstract and connects to {concept_text}.",
+        f"One possible answer is {term_a}. Another good choice could be {term_b}.",
         "It keeps the explanation accurate and based on real information.",
     ]
     return examples, questions, answers
@@ -496,8 +505,8 @@ def _build_english_examples(book: dict[str, Any], concept: str) -> tuple[list[st
 
     examples = [
         explanation,
-        f"A short summary could begin with: {sentence}",
-        f"Key words from the title and abstract help you explain the book in a clear and accurate way.",
+        f"A clear sentence from the abstract is: {sentence}",
+        f"That detail helps you show {concept} without changing the meaning of the book.",
     ]
     questions = [
         f"What is the main idea of {title}?",
@@ -505,8 +514,8 @@ def _build_english_examples(book: dict[str, Any], concept: str) -> tuple[list[st
         "What important information should a good summary keep?",
     ]
     answers = [
-        "A correct answer tells the most important idea from the title and abstract.",
-        f"A good short summary is one that stays close to this idea: {sentence}",
+        f"A strong answer gives the most important idea in the book, such as: {sentence}",
+        f"A good short summary could be: {sentence}",
         "A good summary keeps the main people, topic, or message without adding made-up details.",
     ]
     return examples, questions, answers
@@ -517,9 +526,9 @@ def _build_social_science_examples(book: dict[str, Any], concept: str) -> tuple[
     title = str(book.get("title", "this book")).strip() or "this book"
     concept_text = concept.title()
     examples = [
-        f"{title} connects to {concept_text} because the abstract focuses on real people, real events, or real changes in society.",
-        f"The abstract says: {sentence}",
-        f"In social science, we study how people, groups, and events shape communities and history over time.",
+        f"{title} connects to {concept_text} because the abstract focuses on real people, events, or changes in society.",
+        f"One important detail is: {sentence}",
+        f"That detail helps you think about who made a difference, what changed, or why that change mattered.",
     ]
     questions = [
         f"Why does {title} connect to {concept_text}?",
@@ -527,8 +536,8 @@ def _build_social_science_examples(book: dict[str, Any], concept: str) -> tuple[
         "Why is it important to study real people and events in social science?",
     ]
     answers = [
-        "It connects because the title and abstract point to real people, real events, or change over time.",
-        "A correct answer describes the contribution or historical idea named in the abstract.",
+        f"It connects because the title and abstract point to real people, real events, or change over time.",
+        f"One good answer uses the real detail in the abstract: {sentence}",
         "It helps us understand how people and events shape society.",
     ]
     return examples, questions, answers
@@ -538,9 +547,9 @@ def _build_values_examples(book: dict[str, Any], concept: str) -> tuple[list[str
     sentence = extract_reference_sentence(book)
     concept_text = concept.title()
     examples = [
-        f"This book supports {concept_text} when the abstract shows people making brave, kind, fair, or responsible choices.",
-        f"The abstract says: {sentence}",
-        f"A value lesson looks at what we can learn from those choices and why they matter in real life.",
+        f"This book supports {concept_text} when the abstract shows a choice, action, or attitude linked to that value.",
+        f"One useful detail is: {sentence}",
+        f"That detail helps you think about what someone did and what we can learn from it.",
     ]
     questions = [
         f"What value connects best to this book: {concept_text} or something else?",
@@ -548,8 +557,8 @@ def _build_values_examples(book: dict[str, Any], concept: str) -> tuple[list[str
         "How can this value help in everyday life?",
     ]
     answers = [
-        f"A correct answer explains why {concept_text} fits the title and abstract.",
-        "A correct answer points to the real detail in the abstract that shows the value.",
+        f"{concept_text} fits when the abstract shows people sharing, helping, or making caring choices.",
+        f"One good answer points to this detail: {sentence}",
         f"It can help someone act with {concept_text.lower()} in school, home, or the community.",
     ]
     return examples, questions, answers
@@ -568,30 +577,30 @@ def build_examples_questions_answers(book: dict[str, Any], subject: str, concept
 
 
 def build_concept_explanation(subject: str, concept: str, grade: str) -> str:
-    grade_profile = get_grade_profile(grade)
     concept_text = concept.title()
     if subject == "Math":
-        return f"{concept_text} in math helps you work with numbers, parts, totals, or comparisons in a clear way. This explanation is written in {grade_profile['tone']} language for {grade_profile['label']}."
+        return f"{concept_text} helps you notice amounts, compare them, and explain your answer with clear number thinking."
     if subject == "Science":
-        return f"{concept_text} in science helps you notice real features, describe them clearly, and connect them to what happens in nature or the world."
+        return f"{concept_text} helps you use real details to notice, describe, and explain what is happening in the natural world."
     if subject == "English":
-        return f"{concept_text} in English helps you understand what a text is mainly saying and how to express that idea clearly."
+        return f"{concept_text} helps you understand the main message of a text and say it clearly in your own words."
     if subject == "Social Science":
-        return f"{concept_text} in social science helps you think about people, communities, history, and how change happens over time."
-    return f"{concept_text} helps you think about choices, attitudes, and actions that matter in real life."
+        return f"{concept_text} helps you understand people, events, and how actions or changes shape communities over time."
+    return f"{concept_text} helps you notice the choices and actions that matter in real life and why they matter."
 
 
 def build_activity(book: dict[str, Any], subject: str, concept: str) -> str:
     sentence = extract_reference_sentence(book)
+    context_phrase = build_book_context_phrase(book)
     if subject == "Math":
-        return f"Use the title and abstract to create one number sentence or comparison that fits {concept}. Then say why it matches the book."
+        return f"Use the book ideas about {context_phrase} to write one math statement with {concept}. After that, explain in one sentence how your math idea matches the book."
     if subject == "Science":
-        return f"Write two science words from this idea: {sentence} Then write one sentence explaining how they connect to {concept}."
+        return f"Choose two science words or ideas from this line: {sentence} Then write one sentence that shows how they connect to {concept}."
     if subject == "English":
-        return f"Write a 2-sentence summary of the book. Make sure both sentences stay close to this idea: {sentence}"
+        return f"Write two sentences that show {concept} in this book. Both sentences must stay close to this idea: {sentence}"
     if subject == "Social Science":
-        return f"Write two lines about what this book teaches about people, society, or history. Use one real detail from the abstract."
-    return f"Write one real-life example of {concept} that connects to the lesson idea in the abstract."
+        return f"Write two lines that use one real detail from the abstract to show {concept} in people, society, or history."
+    return f"Write two lines that show how {concept} appears in this book and why that value matters."
 
 
 def build_fit_guidance_sections(book: dict[str, Any], subject: str, concept: str, fit_result: dict[str, Any]) -> list[tuple[str, Any]]:
@@ -601,6 +610,7 @@ def build_fit_guidance_sections(book: dict[str, Any], subject: str, concept: str
         ("Why this concept fits this book", explanation),
         ("Simple concept explanation", f"This is not a strong match for {concept}, so a normal lesson would feel forced."),
         ("Examples from this book", [f"Better concepts for this book: {', '.join(suggestions)}"] if suggestions else ["Choose a different concept or another book."]),
+        ("Quick reminder", "Choose a concept that the title and abstract support more clearly."),
         ("Try it yourself", "Pick one of the suggested concepts and create the lesson again."),
         ("3 practice questions", ["Why is this concept a weak match?", "What does the title or abstract support more clearly?", "Which better concept would you choose next?"]),
         ("Answers", ["Because the title and abstract do not support it well.", "A correct answer names the stronger idea in the book.", "A correct answer picks one of the suggested concepts."]),
@@ -619,19 +629,22 @@ def build_fallback_lesson(
     examples, questions, answers = build_examples_questions_answers(book, subject, concept)
     support_terms = fit_result.get("matched_terms", []) + fit_result.get("matched_keywords", [])
     support_text = ", ".join(dict.fromkeys(support_terms[:4])) if support_terms else "the main ideas in the title and abstract"
+    context_phrase = build_book_context_phrase(book)
     if fit_result["level"] == "strong":
         why_fit = f"{title} fits {concept} because the title and abstract connect to {support_text}."
     elif fit_result["level"] == "medium":
         why_fit = f"{title} can support {concept} because the abstract gives enough clues through {support_text}."
     else:
-        why_fit = f"{title} is not a perfect match for {concept}, but it still gives enough context to practice the idea through {support_text}."
+        why_fit = f"{title} is a lighter match for {concept}, but it still gives enough context through {support_text}."
     concept_explanation = build_concept_explanation(subject, concept, grade)
     example_lines = examples[:3]
+    reminder = f"Remember: keep using real book ideas such as {context_phrase} while you practice {concept.title()}."
     activity = build_activity(book, subject, concept)
     return [
         ("Why this concept fits this book", why_fit),
-        ("Simple concept explanation", f"{concept_explanation} The key book idea we are using is: {reference_sentence}"),
+        ("Simple concept explanation", f"{concept_explanation} In this book, the key idea we are using is: {reference_sentence}"),
         ("Examples from this book", example_lines),
+        ("Quick reminder", reminder),
         ("Try it yourself", activity),
         ("3 practice questions", questions[:3]),
         ("Answers", answers[:3]),
@@ -641,6 +654,27 @@ def build_fallback_lesson(
 def split_lines_as_list(value: str) -> list[str]:
     items = [line.strip("- ").strip() for line in value.splitlines() if line.strip()]
     return items
+
+
+def build_support_terms(book: dict[str, Any], fit_result: dict[str, Any]) -> list[str]:
+    support_terms = fit_result.get("matched_terms", []) + fit_result.get("matched_keywords", [])
+    theme_terms = extract_theme_terms(book, limit=6)
+    ordered_terms: list[str] = []
+    for term in support_terms + theme_terms:
+        normalized = normalize_text(term)
+        if normalized and normalized not in ordered_terms:
+            ordered_terms.append(normalized)
+    return ordered_terms[:6]
+
+
+def build_keyword_feedback(answer: str, expected_terms: list[str]) -> dict[str, Any]:
+    answer_tokens = set(split_tokens(answer))
+    matched = [term for term in expected_terms if any(token in answer_tokens for token in split_tokens(term))]
+    missing = [term for term in expected_terms if term not in matched]
+    return {
+        "matched_terms": matched,
+        "missing_terms": missing,
+    }
 
 
 def parse_lesson_text(content: str) -> list[tuple[str, Any]]:
@@ -832,3 +866,287 @@ def generate_lesson(book: dict[str, Any], subject: str, concept: str, grade: str
         "fit_result": fit_result,
         "mode": "lesson",
     }
+
+
+def generate_open_ended_question(
+    book: dict[str, Any],
+    subject: str,
+    concept: str,
+    fit_result: dict[str, Any],
+) -> dict[str, Any]:
+    reference_sentence = extract_reference_sentence(book)
+    support_terms = build_support_terms(book, fit_result)
+    concept_text = concept.title()
+    if subject == "Math":
+        prompt = f"Using this book detail, show how {concept_text} helps you think clearly: {reference_sentence}"
+    elif subject == "Science":
+        prompt = f"Which science idea in this line connects best to {concept_text}, and why? {reference_sentence}"
+    elif subject == "English":
+        prompt = f"How does this line help you show {concept_text} clearly? {reference_sentence}"
+    elif subject == "Social Science":
+        prompt = f"What does this book detail teach you about {concept_text}? {reference_sentence}"
+    else:
+        prompt = f"What action, choice, or attitude in this line shows {concept_text}? {reference_sentence}"
+    return {
+        "prompt": prompt,
+        "expected_terms": support_terms[:4] or split_tokens(concept) or ["book"],
+    }
+
+
+def evaluate_open_ended_feedback(
+    book: dict[str, Any],
+    subject: str,
+    concept: str,
+    fit_result: dict[str, Any],
+    answer: str,
+) -> dict[str, Any]:
+    support_terms = build_support_terms(book, fit_result)[:4] or split_tokens(concept)
+    keyword_feedback = build_keyword_feedback(answer, support_terms)
+    matched_terms = keyword_feedback["matched_terms"]
+    missing_terms = keyword_feedback["missing_terms"]
+    answer_length = len(split_tokens(answer))
+    if answer_length == 0:
+        return {
+            "what_is_correct": "You have not added an answer yet.",
+            "what_is_missing": f"Try to explain {concept} using one real idea from the title or abstract.",
+            "hint": "Use one word or idea from the book, then connect it to the concept.",
+            "encouragement": "You can do this. Start with one simple sentence.",
+            "is_complete": False,
+        }
+    context_phrase = build_book_context_phrase(book, limit=2)
+    what_is_correct = (
+        f"You connected {concept} to book ideas like {', '.join(matched_terms[:2])}."
+        if matched_terms
+        else f"You made a start by writing about {concept}."
+    )
+    what_is_missing = (
+        f"To make it stronger, add one clear book detail such as {', '.join(missing_terms[:2])}."
+        if missing_terms[:2]
+        else f"Now make the link clearer by saying exactly how {concept} works in the book."
+    )
+    hint = (
+        f"Hint: use one book idea like {', '.join(missing_terms[:2])}, then connect it directly to {concept}."
+        if missing_terms[:2]
+        else f"Hint: mention {context_phrase} and then explain why it shows {concept}."
+    )
+    encouragement = "Nice thinking. Your answer is moving in the right direction."
+    is_complete = bool(matched_terms) and answer_length >= 6 and ("because" in normalize_text(answer) or answer_length >= 10)
+    return {
+        "what_is_correct": what_is_correct,
+        "what_is_missing": what_is_missing,
+        "hint": hint,
+        "encouragement": encouragement,
+        "is_complete": is_complete,
+    }
+
+
+def generate_applied_activity(
+    book: dict[str, Any],
+    subject: str,
+    concept: str,
+    fit_result: dict[str, Any],
+) -> dict[str, Any]:
+    examples, _, answers = build_examples_questions_answers(book, subject, concept)
+    prompt = build_activity(book, subject, concept)
+    return {
+        "prompt": prompt,
+        "sample_answer": answers[0] if answers else examples[0] if examples else f"Use the title and abstract to show {concept}.",
+        "expected_terms": build_support_terms(book, fit_result)[:4] or split_tokens(concept),
+        "expected_steps": split_tokens(concept)[:2] or [normalize_text(concept)],
+    }
+
+
+def evaluate_activity_feedback(
+    book: dict[str, Any],
+    subject: str,
+    concept: str,
+    fit_result: dict[str, Any],
+    answer: str,
+) -> dict[str, Any]:
+    support_terms = build_support_terms(book, fit_result)[:4] or split_tokens(concept)
+    keyword_feedback = build_keyword_feedback(answer, support_terms)
+    matched_terms = keyword_feedback["matched_terms"]
+    missing_terms = keyword_feedback["missing_terms"]
+    answer_length = len(split_tokens(answer))
+    concept_tokens = split_tokens(concept)
+    concept_seen = any(token in split_tokens(answer) for token in concept_tokens) if concept_tokens else True
+    if answer_length == 0:
+        return {
+            "what_is_correct": "You have not submitted the activity answer yet.",
+            "what_can_improve": f"Use the book context to apply {concept} in one clear example.",
+            "hint": "Start with one fact, idea, or number from the book and use it in the activity.",
+            "encouragement": "Try one simple attempt first. You can improve it after that.",
+            "is_complete": False,
+        }
+    context_phrase = build_book_context_phrase(book, limit=2)
+    return {
+        "what_is_correct": (
+            f"You used helpful book ideas like {', '.join(matched_terms[:2])}."
+            if matched_terms
+            else f"You tried to apply {concept}, which is a good start."
+        ),
+        "what_can_improve": (
+            f"Make the answer stronger by including {', '.join(missing_terms[:2])} and showing the concept step clearly."
+            if missing_terms[:2]
+            else f"Add one short line that explains how your answer shows {concept}."
+        ),
+        "hint": (
+            f"Hint: include {', '.join(missing_terms[:2])} and say how it helps you use {concept}."
+            if missing_terms[:2]
+            else f"Hint: use words like {context_phrase} and then show the concept in action."
+        ),
+        "encouragement": "Good effort. You are close to a strong applied answer.",
+        "is_complete": bool(matched_terms) and concept_seen and answer_length >= 8,
+    }
+
+
+def generate_sequence_quiz(
+    book: dict[str, Any],
+    subject: str,
+    concept: str,
+    grade: str,
+    fit_result: dict[str, Any],
+    *,
+    simplified: bool = False,
+) -> list[dict[str, Any]]:
+    examples, questions, answers = build_examples_questions_answers(book, subject, concept)
+    support_terms = build_support_terms(book, fit_result)
+    quiz_items: list[dict[str, Any]] = []
+    mcq_count = 2 if simplified else 3
+
+    for question, answer in zip(questions[:mcq_count], answers[:mcq_count]):
+        distractors = [item for item in answers[:mcq_count] if item != answer][:2]
+        if len(distractors) < 2:
+            distractors.extend([example for example in examples if example != answer][: 2 - len(distractors)])
+        options = [answer] + distractors
+        unique_options: list[str] = []
+        for option in options:
+            if option and option not in unique_options:
+                unique_options.append(option)
+        while len(unique_options) < 3:
+            unique_options.append(f"Another choice about {concept}")
+        quiz_items.append(
+            {
+                "question_type": "mcq",
+                "question": question,
+                "options": unique_options[:3],
+                "answer": answer,
+                "feedback": answer,
+            }
+        )
+
+    short_prompt = (
+        f"In one or two sentences, explain how {concept} is used with one real idea from the book."
+        if not simplified
+        else f"Write one short sentence that uses {concept} with one real book idea."
+    )
+    quiz_items.append(
+        {
+            "question_type": "short",
+            "question": short_prompt,
+            "answer": f"A good answer mentions {concept} and a real idea such as {', '.join(support_terms[:2]) or 'the title or abstract'}.",
+            "concept_terms": split_tokens(concept),
+            "expected_terms": support_terms[:3] or split_tokens(concept),
+            "feedback": f"Use the concept and one real book idea like {', '.join(support_terms[:2]) or concept}.",
+        }
+    )
+    return quiz_items
+
+
+def score_sequence_quiz(questions: list[dict[str, Any]], answers: list[str]) -> dict[str, Any]:
+    results: list[dict[str, Any]] = []
+    score = 0
+    for index, question in enumerate(questions):
+        selected = answers[index].strip() if index < len(answers) and isinstance(answers[index], str) else ""
+        if question.get("question_type") == "short":
+            expected_terms = [normalize_text(term) for term in question.get("expected_terms", [])]
+            keyword_feedback = build_keyword_feedback(selected, expected_terms)
+            matched_terms = keyword_feedback["matched_terms"]
+            concept_terms = question.get("concept_terms", [])
+            concept_seen = any(token in split_tokens(selected) for token in concept_terms) if concept_terms else True
+            is_correct = bool(matched_terms) and len(split_tokens(selected)) >= 4 and concept_seen
+            feedback = (
+                f"You included strong ideas like {', '.join(matched_terms[:2])} and used the concept clearly."
+                if is_correct
+                else question.get("feedback", "Add the concept and one real book idea.")
+            )
+        else:
+            is_correct = selected == question["answer"]
+            feedback = question["feedback"] if is_correct else f"Check the concept again. The better answer is: {question['answer']}"
+        if is_correct:
+            score += 1
+        results.append(
+            {
+                "question": question["question"],
+                "selected_answer": selected,
+                "correct_answer": question["answer"],
+                "is_correct": is_correct,
+                "feedback": feedback,
+                "question_type": question.get("question_type", "mcq"),
+            }
+        )
+
+    total = len(questions)
+    percentage = round((score / total) * 100, 1) if total else 0.0
+    passed = percentage >= 60.0
+    review_summary = (
+        "You passed the learning check. Keep using the same book idea and concept connection."
+        if passed
+        else "Review the concept, the key examples, and one real book detail before trying again."
+    )
+    summary = "Great work. You passed the quiz." if passed else "Good try. Review the lesson and try the quiz again."
+    return {
+        "score": score,
+        "total_questions": total,
+        "percentage": percentage,
+        "passed": passed,
+        "results": results,
+        "summary": summary,
+        "review_summary": review_summary,
+    }
+
+
+def learning_sequence_to_text(sequence: dict[str, Any]) -> str:
+    teach_sections = sequence.get("teach_sections", [])
+    blocks = [lesson_sections_to_text(teach_sections)]
+    reflect = sequence.get("reflect_question", {})
+    activity = sequence.get("activity", {})
+    quiz = sequence.get("quiz_questions", [])
+    if reflect.get("prompt"):
+        blocks.append(f"Reflect\n{reflect['prompt']}")
+    if activity.get("prompt"):
+        blocks.append(f"Practice\n{activity['prompt']}")
+    if quiz:
+        blocks.append(f"Quiz\n{len(quiz)} final check questions are included in the learning sequence.")
+    return "\n\n".join(blocks)
+
+
+def generate_learning_sequence(book: dict[str, Any], subject: str, concept: str, grade: str) -> dict[str, Any]:
+    lesson = generate_lesson(book, subject, concept, grade)
+    chosen_concept = lesson.get("chosen_concept", concept.strip())
+    fit_result = lesson.get("fit_result", {})
+    if lesson.get("mode") == "fit_warning":
+        return {
+            **lesson,
+            "teach_sections": lesson.get("sections", []),
+            "reflect_question": None,
+            "activity": None,
+            "quiz_questions": [],
+            "sequence_text": lesson_sections_to_text(lesson.get("sections", [])),
+        }
+
+    reflect_question = generate_open_ended_question(book, subject, chosen_concept, fit_result)
+    activity = generate_applied_activity(book, subject, chosen_concept, fit_result)
+    quiz_questions = generate_sequence_quiz(book, subject, chosen_concept, grade, fit_result, simplified=False)
+    sequence = {
+        "warning": lesson["warning"],
+        "teach_sections": lesson["sections"],
+        "chosen_concept": chosen_concept,
+        "fit_result": fit_result,
+        "mode": lesson.get("mode", "lesson"),
+        "reflect_question": reflect_question,
+        "activity": activity,
+        "quiz_questions": quiz_questions,
+    }
+    sequence["sequence_text"] = learning_sequence_to_text(sequence)
+    return sequence

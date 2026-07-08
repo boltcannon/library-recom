@@ -94,6 +94,46 @@ GENERATED_LESSON_COLUMN_TYPES = {
     "created_at": "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
 }
 
+LESSON_SEQUENCE_COLUMN_TYPES = {
+    "lesson_id": "INTEGER",
+    "user_id": "INTEGER NOT NULL",
+    "book_id": "INTEGER NOT NULL",
+    "subject": "TEXT NOT NULL",
+    "concept": "TEXT NOT NULL",
+    "fit_level": "TEXT",
+    "lesson_content": "TEXT NOT NULL",
+    "reflect_question": "TEXT",
+    "reflect_answer": "TEXT",
+    "reflect_feedback": "TEXT",
+    "activity_prompt": "TEXT",
+    "activity_answer": "TEXT",
+    "activity_feedback": "TEXT",
+    "quiz_payload": "TEXT",
+    "quiz_answers": "TEXT",
+    "quiz_score": "INTEGER",
+    "total_questions": "INTEGER",
+    "passed": "BOOLEAN NOT NULL DEFAULT FALSE",
+    "retry_count": "INTEGER NOT NULL DEFAULT 0",
+    "status": "TEXT NOT NULL DEFAULT 'started'",
+    "created_at": "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
+    "updated_at": "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
+}
+
+LESSON_SEQUENCE_ATTEMPT_COLUMN_TYPES = {
+    "sequence_id": "INTEGER NOT NULL",
+    "attempt_number": "INTEGER NOT NULL",
+    "reflect_answer": "TEXT",
+    "reflect_feedback": "TEXT",
+    "activity_answer": "TEXT",
+    "activity_feedback": "TEXT",
+    "quiz_payload": "TEXT",
+    "quiz_answers": "TEXT",
+    "quiz_score": "INTEGER",
+    "total_questions": "INTEGER",
+    "passed": "BOOLEAN NOT NULL DEFAULT FALSE",
+    "created_at": "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
+}
+
 FEEDBACK_COLUMN_TYPES = {
     "student_id": "INTEGER",
     "session_id": "INTEGER",
@@ -1012,6 +1052,67 @@ def _init_db_schema(config: DatabaseConfig) -> None:
     execute_query(
         config,
         f"""
+        CREATE TABLE IF NOT EXISTS lesson_sequences (
+            id {_id_column(config)},
+            lesson_id INTEGER,
+            user_id INTEGER NOT NULL,
+            book_id INTEGER NOT NULL,
+            subject TEXT NOT NULL,
+            concept TEXT NOT NULL,
+            fit_level TEXT,
+            lesson_content TEXT NOT NULL,
+            reflect_question TEXT,
+            reflect_answer TEXT,
+            reflect_feedback TEXT,
+            activity_prompt TEXT,
+            activity_answer TEXT,
+            activity_feedback TEXT,
+            quiz_payload TEXT,
+            quiz_answers TEXT,
+            quiz_score INTEGER,
+            total_questions INTEGER,
+            passed BOOLEAN NOT NULL DEFAULT FALSE,
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'started',
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (lesson_id) REFERENCES generated_lessons(id),
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (book_id) REFERENCES books(id)
+        )
+        """,
+    )
+    ensure_table_columns(config, "lesson_sequences", LESSON_SEQUENCE_COLUMN_TYPES)
+    ensure_index(config, "idx_lesson_sequences_user_book", "lesson_sequences", "user_id, book_id")
+    ensure_index(config, "idx_lesson_sequences_updated", "lesson_sequences", "updated_at")
+
+    execute_query(
+        config,
+        f"""
+        CREATE TABLE IF NOT EXISTS lesson_sequence_attempts (
+            id {_id_column(config)},
+            sequence_id INTEGER NOT NULL,
+            attempt_number INTEGER NOT NULL,
+            reflect_answer TEXT,
+            reflect_feedback TEXT,
+            activity_answer TEXT,
+            activity_feedback TEXT,
+            quiz_payload TEXT,
+            quiz_answers TEXT,
+            quiz_score INTEGER,
+            total_questions INTEGER,
+            passed BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (sequence_id) REFERENCES lesson_sequences(id)
+        )
+        """,
+    )
+    ensure_table_columns(config, "lesson_sequence_attempts", LESSON_SEQUENCE_ATTEMPT_COLUMN_TYPES)
+    ensure_index(config, "idx_lesson_sequence_attempts_sequence", "lesson_sequence_attempts", "sequence_id")
+
+    execute_query(
+        config,
+        f"""
         CREATE TABLE IF NOT EXISTS feedback (
             id {_id_column(config)},
             student_id INTEGER,
@@ -1674,6 +1775,228 @@ def log_generated_lesson(
     return lesson_id
 
 
+def _json_dumps(value: Any) -> str | None:
+    if value is None:
+        return None
+    return json.dumps(value)
+
+
+def _json_loads(value: Any, fallback: Any) -> Any:
+    if value in (None, ""):
+        return fallback
+    try:
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return fallback
+
+
+def create_lesson_sequence(
+    config: DatabaseConfig,
+    *,
+    lesson_id: int | None,
+    user_id: int,
+    book_id: int,
+    subject: str,
+    concept: str,
+    fit_level: str,
+    lesson_content: str,
+    reflect_question: str | None,
+    activity_prompt: str | None,
+    quiz_payload: list[dict[str, Any]] | None,
+) -> int:
+    init_db(config)
+    sequence_id = insert_and_get_id(
+        config,
+        """
+        INSERT INTO lesson_sequences (
+            lesson_id,
+            user_id,
+            book_id,
+            subject,
+            concept,
+            fit_level,
+            lesson_content,
+            reflect_question,
+            activity_prompt,
+            quiz_payload
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (
+            lesson_id,
+            user_id,
+            book_id,
+            subject,
+            concept,
+            fit_level,
+            lesson_content,
+            reflect_question,
+            activity_prompt,
+            _json_dumps(quiz_payload),
+        ),
+    )
+    clear_data_caches()
+    return sequence_id
+
+
+def update_lesson_sequence(
+    config: DatabaseConfig,
+    sequence_id: int,
+    *,
+    reflect_answer: str | None = None,
+    reflect_feedback: dict[str, Any] | None = None,
+    activity_answer: str | None = None,
+    activity_feedback: dict[str, Any] | None = None,
+    quiz_payload: list[dict[str, Any]] | None = None,
+    quiz_answers: list[str] | None = None,
+    quiz_score: int | None = None,
+    total_questions: int | None = None,
+    passed: bool | None = None,
+    retry_count: int | None = None,
+    status: str | None = None,
+    clear_quiz_result: bool = False,
+) -> None:
+    init_db(config)
+    current = fetch_one(config, "SELECT * FROM lesson_sequences WHERE id = %s", (sequence_id,))
+    if not current:
+        return
+
+    execute_query(
+        config,
+        """
+        UPDATE lesson_sequences
+        SET
+            reflect_answer = %s,
+            reflect_feedback = %s,
+            activity_answer = %s,
+            activity_feedback = %s,
+            quiz_payload = %s,
+            quiz_answers = %s,
+            quiz_score = %s,
+            total_questions = %s,
+            passed = %s,
+            retry_count = %s,
+            status = %s,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s
+        """,
+        (
+            reflect_answer if reflect_answer is not None else current.get("reflect_answer"),
+            _json_dumps(reflect_feedback) if reflect_feedback is not None else current.get("reflect_feedback"),
+            activity_answer if activity_answer is not None else current.get("activity_answer"),
+            _json_dumps(activity_feedback) if activity_feedback is not None else current.get("activity_feedback"),
+            _json_dumps(quiz_payload) if quiz_payload is not None else current.get("quiz_payload"),
+            _json_dumps(quiz_answers) if quiz_answers is not None else current.get("quiz_answers"),
+            None if clear_quiz_result and quiz_score is None else quiz_score if quiz_score is not None else current.get("quiz_score"),
+            None if clear_quiz_result and total_questions is None else total_questions if total_questions is not None else current.get("total_questions"),
+            passed if passed is not None else (False if clear_quiz_result else current.get("passed")),
+            retry_count if retry_count is not None else current.get("retry_count"),
+            status if status is not None else current.get("status"),
+            sequence_id,
+        ),
+    )
+    clear_data_caches()
+
+
+def log_lesson_sequence_attempt(
+    config: DatabaseConfig,
+    *,
+    sequence_id: int,
+    attempt_number: int,
+    reflect_answer: str | None,
+    reflect_feedback: dict[str, Any] | None,
+    activity_answer: str | None,
+    activity_feedback: dict[str, Any] | None,
+    quiz_payload: list[dict[str, Any]] | None,
+    quiz_answers: list[str] | None,
+    quiz_score: int | None,
+    total_questions: int | None,
+    passed: bool,
+) -> int:
+    init_db(config)
+    attempt_id = insert_and_get_id(
+        config,
+        """
+        INSERT INTO lesson_sequence_attempts (
+            sequence_id,
+            attempt_number,
+            reflect_answer,
+            reflect_feedback,
+            activity_answer,
+            activity_feedback,
+            quiz_payload,
+            quiz_answers,
+            quiz_score,
+            total_questions,
+            passed
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (
+            sequence_id,
+            attempt_number,
+            reflect_answer,
+            _json_dumps(reflect_feedback),
+            activity_answer,
+            _json_dumps(activity_feedback),
+            _json_dumps(quiz_payload),
+            _json_dumps(quiz_answers),
+            quiz_score,
+            total_questions,
+            passed,
+        ),
+    )
+    clear_data_caches()
+    return attempt_id
+
+
+def _deserialize_lesson_sequence(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    sequence = dict(row)
+    sequence["reflect_feedback"] = _json_loads(sequence.get("reflect_feedback"), None)
+    sequence["activity_feedback"] = _json_loads(sequence.get("activity_feedback"), None)
+    sequence["quiz_payload"] = _json_loads(sequence.get("quiz_payload"), [])
+    sequence["quiz_answers"] = _json_loads(sequence.get("quiz_answers"), [])
+    return sequence
+
+
+@st.cache_data(show_spinner=False)
+def fetch_latest_lesson_sequence_for_user(
+    config: DatabaseConfig,
+    user_id: int,
+    *,
+    book_id: int | None = None,
+) -> dict[str, Any] | None:
+    init_db(config)
+    if book_id is None:
+        row = fetch_one(
+            config,
+            """
+            SELECT *
+            FROM lesson_sequences
+            WHERE user_id = %s
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+    else:
+        row = fetch_one(
+            config,
+            """
+            SELECT *
+            FROM lesson_sequences
+            WHERE user_id = %s AND book_id = %s
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 1
+            """,
+            (user_id, book_id),
+        )
+    return _deserialize_lesson_sequence(row)
+
 def save_quiz_result(
     config: DatabaseConfig,
     student_id: int,
@@ -1711,9 +2034,16 @@ def fetch_student_dashboard_data_for_user(config: DatabaseConfig, user_id: int) 
         "SELECT COUNT(*) AS count FROM saved_books WHERE user_id = %s AND status IN ('read', 'saved_read')",
         (user_id,),
     )
-    lessons_generated_row = fetch_one(
+    lesson_stats_row = fetch_one(
         config,
-        "SELECT COUNT(*) AS count FROM generated_lessons WHERE student_id = %s",
+        """
+        SELECT
+            COUNT(*) AS started_count,
+            SUM(CASE WHEN quiz_score IS NOT NULL THEN 1 ELSE 0 END) AS completed_count,
+            SUM(CASE WHEN passed THEN 1 ELSE 0 END) AS passed_count
+        FROM lesson_sequences
+        WHERE user_id = %s
+        """,
         (user_id,),
     )
     quiz_stats_row = fetch_one(
@@ -1727,8 +2057,9 @@ def fetch_student_dashboard_data_for_user(config: DatabaseConfig, user_id: int) 
                     ELSE NULL
                 END
             ) AS avg_percent
-        FROM quiz_results
-        WHERE student_id = %s
+        FROM lesson_sequence_attempts
+        WHERE quiz_score IS NOT NULL AND total_questions IS NOT NULL
+          AND sequence_id IN (SELECT id FROM lesson_sequences WHERE user_id = %s)
         """,
         (user_id,),
     )
@@ -1765,11 +2096,20 @@ def fetch_student_dashboard_data_for_user(config: DatabaseConfig, user_id: int) 
         fetch_all(
             config,
             """
-            SELECT gl.book_id, gl.created_at, books.title, gl.subject, gl.concept
-            FROM generated_lessons gl
-            JOIN books ON books.id = gl.book_id
-            WHERE gl.student_id = %s
-            ORDER BY gl.created_at DESC, gl.id DESC
+            SELECT
+                ls.id AS sequence_id,
+                ls.book_id,
+                ls.updated_at AS created_at,
+                books.title,
+                ls.subject,
+                ls.concept,
+                ls.fit_level,
+                ls.status,
+                ls.passed
+            FROM lesson_sequences ls
+            JOIN books ON books.id = ls.book_id
+            WHERE ls.user_id = %s
+            ORDER BY ls.updated_at DESC, ls.id DESC
             LIMIT 20
             """,
             (user_id,),
@@ -1780,15 +2120,20 @@ def fetch_student_dashboard_data_for_user(config: DatabaseConfig, user_id: int) 
             config,
             """
             SELECT
-                qr.book_id,
-                qr.created_at,
+                ls.book_id,
+                attempts.created_at,
                 books.title,
-                qr.score,
-                qr.total_questions
-            FROM quiz_results qr
-            JOIN books ON books.id = qr.book_id
-            WHERE qr.student_id = %s
-            ORDER BY qr.created_at DESC, qr.id DESC
+                attempts.quiz_score AS score,
+                attempts.total_questions,
+                attempts.passed,
+                ls.subject,
+                ls.concept,
+                attempts.attempt_number
+            FROM lesson_sequence_attempts attempts
+            JOIN lesson_sequences ls ON ls.id = attempts.sequence_id
+            JOIN books ON books.id = ls.book_id
+            WHERE ls.user_id = %s
+            ORDER BY attempts.created_at DESC, attempts.id DESC
             LIMIT 20
             """,
             (user_id,),
@@ -1846,8 +2191,8 @@ def fetch_student_dashboard_data_for_user(config: DatabaseConfig, user_id: int) 
     for _, row in lesson_history.head(5).iterrows():
         recent_activity_rows.append(
             {
-                "activity_type": "Lesson",
-                "description": f"Generated a {row.get('subject', 'story')} lesson for {row.get('title', 'a book')}",
+                "activity_type": "Learning",
+                "description": f"Worked on {row.get('concept', 'a concept')} with {row.get('title', 'a book')}",
                 "created_at": row.get("created_at"),
             }
         )
@@ -1855,7 +2200,7 @@ def fetch_student_dashboard_data_for_user(config: DatabaseConfig, user_id: int) 
         recent_activity_rows.append(
             {
                 "activity_type": "Quiz",
-                "description": f"Scored {row.get('score', 0)}/{row.get('total_questions', 0)} on {row.get('title', 'a book')}",
+                "description": f"Scored {row.get('score', 0)}/{row.get('total_questions', 0)} on {row.get('concept', 'a concept')}",
                 "created_at": row.get("created_at"),
             }
         )
@@ -1883,6 +2228,14 @@ def fetch_student_dashboard_data_for_user(config: DatabaseConfig, user_id: int) 
             )
     last_selected_book_id = int(selected_history.iloc[0]["book_id"]) if not selected_history.empty and "book_id" in selected_history.columns else None
     last_lesson_book_id = int(lesson_history.iloc[0]["book_id"]) if not lesson_history.empty and "book_id" in lesson_history.columns else None
+    recent_concepts = []
+    if not lesson_history.empty and "concept" in lesson_history.columns:
+        for concept in lesson_history["concept"].fillna("").tolist():
+            concept_value = str(concept).strip()
+            if concept_value and concept_value not in recent_concepts:
+                recent_concepts.append(concept_value)
+            if len(recent_concepts) >= 4:
+                break
 
     if not reading_history.empty and "book_id" in reading_history.columns:
         explored_ids.update(int(book_id) for book_id in reading_history["book_id"].dropna().tolist())
@@ -1897,12 +2250,15 @@ def fetch_student_dashboard_data_for_user(config: DatabaseConfig, user_id: int) 
         "total_books_explored": len(explored_ids),
         "total_books_saved": int(books_saved_row["count"]) if books_saved_row else 0,
         "total_books_marked_as_read": int(books_read_row["count"]) if books_read_row else 0,
-        "total_lessons_generated": int(lessons_generated_row["count"]) if lessons_generated_row else 0,
+        "total_lessons_generated": int(lesson_stats_row["started_count"]) if lesson_stats_row and lesson_stats_row.get("started_count") is not None else 0,
+        "total_lessons_completed": int(lesson_stats_row["completed_count"]) if lesson_stats_row and lesson_stats_row.get("completed_count") is not None else 0,
+        "total_quizzes_passed": int(lesson_stats_row["passed_count"]) if lesson_stats_row and lesson_stats_row.get("passed_count") is not None else 0,
         "quiz_attempts": int(quiz_stats_row["attempt_count"]) if quiz_stats_row and quiz_stats_row.get("attempt_count") is not None else 0,
         "quiz_average_percent": round(float(quiz_stats_row["avg_percent"]), 1) if quiz_stats_row and quiz_stats_row.get("avg_percent") is not None else None,
         "favorite_topics": profile_row["favorite_topics"] if profile_row and profile_row.get("favorite_topics") else "",
         "last_selected_book_id": last_selected_book_id,
         "last_lesson_book_id": last_lesson_book_id,
+        "recent_concepts_learned": recent_concepts,
         "recent_activity": recent_activity,
         "recommended_history": recommended_history,
         "selected_history": selected_history,
@@ -1919,6 +2275,28 @@ def fetch_dashboard_metrics(config: DatabaseConfig) -> dict[str, Any]:
     total_books_row = fetch_one(config, "SELECT COUNT(*) AS count FROM books")
     total_sessions_row = fetch_one(config, "SELECT COUNT(*) AS count FROM recommendation_sessions")
     avg_rating_row = fetch_one(config, "SELECT AVG(rating) AS avg_rating FROM user_feedback")
+    lesson_sequence_stats_row = fetch_one(
+        config,
+        """
+        SELECT
+            COUNT(*) AS started_count,
+            SUM(CASE WHEN quiz_score IS NOT NULL THEN 1 ELSE 0 END) AS completed_count,
+            SUM(CASE WHEN passed THEN 1 ELSE 0 END) AS passed_count
+        FROM lesson_sequences
+        """,
+    )
+    concept_attempts_df = pd.DataFrame(
+        fetch_all(
+            config,
+            """
+            SELECT concept, COUNT(*) AS attempt_count
+            FROM lesson_sequences
+            GROUP BY concept
+            ORDER BY attempt_count DESC, LOWER(COALESCE(concept, ''))
+            LIMIT 5
+            """,
+        )
+    )
     selected_books_df = pd.DataFrame(
         fetch_all(
             config,
@@ -1940,7 +2318,20 @@ def fetch_dashboard_metrics(config: DatabaseConfig) -> dict[str, Any]:
         "total_books": int(total_books_row["count"]) if total_books_row else 0,
         "total_recommendation_sessions": int(total_sessions_row["count"]) if total_sessions_row else 0,
         "average_feedback_rating": round(float(avg_rating_row["avg_rating"]), 2) if avg_rating_row and avg_rating_row["avg_rating"] is not None else None,
+        "guided_lessons_started": int(lesson_sequence_stats_row["started_count"]) if lesson_sequence_stats_row and lesson_sequence_stats_row.get("started_count") is not None else 0,
+        "guided_lessons_completed": int(lesson_sequence_stats_row["completed_count"]) if lesson_sequence_stats_row and lesson_sequence_stats_row.get("completed_count") is not None else 0,
+        "guided_pass_rate": (
+            round(
+                (float(lesson_sequence_stats_row["passed_count"]) / float(lesson_sequence_stats_row["completed_count"])) * 100.0,
+                1,
+            )
+            if lesson_sequence_stats_row
+            and lesson_sequence_stats_row.get("passed_count") is not None
+            and lesson_sequence_stats_row.get("completed_count")
+            else None
+        ),
         "most_selected_books": selected_books_df,
+        "most_attempted_concepts": concept_attempts_df,
     }
 
 
@@ -1953,6 +2344,7 @@ def clear_data_caches() -> None:
     fetch_student_profile_for_user.clear()
     fetch_saved_book_statuses_for_user.clear()
     fetch_student_dashboard_data_for_user.clear()
+    fetch_latest_lesson_sequence_for_user.clear()
     fetch_all_books.clear()
     fetch_book_by_id.clear()
     fetch_latest_reviewed_lesson.clear()

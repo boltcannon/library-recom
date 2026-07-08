@@ -28,6 +28,7 @@ from src.database import (
     fetch_student_profile_for_user,
     fetch_user_by_email,
     fetch_user_by_id,
+    init_auth_db,
     init_db,
     log_catalog_upload,
     log_generated_lesson,
@@ -111,6 +112,14 @@ def get_recommendations_cached(
     return recommend_books(books_df, dict(preference_items), top_n=top_n)
 
 
+@st.cache_resource(show_spinner=False)
+def bootstrap_admin_account_if_configured(config: Any, full_name: str, email: str, password: str) -> bool:
+    if not email.strip() or not password.strip():
+        return False
+    ensure_admin_account(config, full_name=full_name, email=email, password=password)
+    return True
+
+
 def setup_page() -> None:
     st.set_page_config(
         page_title="StoryShelf",
@@ -118,12 +127,11 @@ def setup_page() -> None:
         layout="wide",
     )
     inject_global_styles()
-    init_db(DB_CONFIG)
+    init_auth_db(DB_CONFIG)
     admin_email = os.getenv("FIRST_ADMIN_EMAIL", "").strip()
     admin_password = os.getenv("FIRST_ADMIN_PASSWORD", "").strip()
     admin_name = os.getenv("FIRST_ADMIN_NAME", "").strip() or "Admin"
-    if admin_email and admin_password:
-        ensure_admin_account(DB_CONFIG, full_name=admin_name, email=admin_email, password=admin_password)
+    bootstrap_admin_account_if_configured(DB_CONFIG, admin_name, admin_email, admin_password)
 
     st.session_state.setdefault("auth_user", None)
     st.session_state.setdefault("recommended_books", [])
@@ -545,7 +553,6 @@ def enforce_role(required_roles: set[str]) -> dict | None:
 
 
 def render_auth_page() -> None:
-    admin_exists = fetch_admin_user_count(DB_CONFIG) > 0
     auth_options = ["Login", "Sign Up", "Admin Sign Up"]
 
     render_brand_header()
@@ -564,10 +571,7 @@ def render_auth_page() -> None:
             else "Login"
         )),
     )
-    if admin_exists:
-        st.caption("Students and admins use the same login form.")
-    else:
-        st.caption("Set up the first admin account with `Admin Sign Up`.")
+    st.caption("Students and admins use the same login form. Use `Admin Sign Up` only when you need to create the first admin account.")
     if selected_view == "Login":
         st.session_state["auth_view"] = "login"
     elif selected_view == "Admin Sign Up":
@@ -637,6 +641,7 @@ def render_auth_page() -> None:
                 confirm_password = st.text_input("Confirm admin password", type="password", key="admin_signup_confirm_password")
                 submitted = st.form_submit_button("Create Admin Account", type="primary", use_container_width=True)
             if submitted:
+                admin_exists = fetch_admin_user_count(DB_CONFIG) > 0
                 if admin_exists:
                     st.error("An admin account already exists. Please log in.")
                 elif not full_name.strip():

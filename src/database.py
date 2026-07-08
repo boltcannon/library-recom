@@ -914,23 +914,7 @@ def mark_book_completed(
 
 
 def _init_db_schema(config: DatabaseConfig) -> None:
-    execute_query(
-        config,
-        f"""
-        CREATE TABLE IF NOT EXISTS users (
-            id {_id_column(config)},
-            full_name TEXT NOT NULL,
-            email TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            role TEXT NOT NULL DEFAULT 'student',
-            is_active BOOLEAN NOT NULL DEFAULT TRUE,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )
-        """,
-    )
-    _migrate_legacy_users(config)
-    ensure_table_columns(config, "users", USER_COLUMN_TYPES)
-    ensure_index(config, "idx_users_email_unique", "users", "email", unique=True)
+    _init_auth_db_schema(config)
 
     execute_query(
         config,
@@ -1259,6 +1243,36 @@ def _init_db_schema(config: DatabaseConfig) -> None:
     ensure_table_columns(config, "catalog_uploads", CATALOG_UPLOAD_COLUMN_TYPES)
 
 
+def _init_auth_db_schema(config: DatabaseConfig) -> None:
+    execute_query(
+        config,
+        f"""
+        CREATE TABLE IF NOT EXISTS users (
+            id {_id_column(config)},
+            full_name TEXT NOT NULL,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'student',
+            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+    )
+    _migrate_legacy_users(config)
+    ensure_table_columns(config, "users", USER_COLUMN_TYPES)
+    ensure_index(config, "idx_users_email_unique", "users", "email", unique=True)
+
+
+@st.cache_resource(show_spinner=False)
+def _init_auth_db_resource(config: DatabaseConfig) -> bool:
+    _init_auth_db_schema(config)
+    return True
+
+
+def init_auth_db(config: DatabaseConfig) -> None:
+    _init_auth_db_resource(config)
+
+
 @st.cache_resource(show_spinner=False)
 def _init_db_resource(config: DatabaseConfig) -> bool:
     _init_db_schema(config)
@@ -1271,13 +1285,13 @@ def init_db(config: DatabaseConfig) -> None:
 
 @st.cache_data(show_spinner=False)
 def fetch_user_by_email(config: DatabaseConfig, email: str) -> dict[str, Any] | None:
-    init_db(config)
+    init_auth_db(config)
     return fetch_one(config, "SELECT * FROM users WHERE email = %s", (normalize_email(email),))
 
 
 @st.cache_data(show_spinner=False)
 def fetch_user_by_id(config: DatabaseConfig, user_id: int) -> dict[str, Any] | None:
-    init_db(config)
+    init_auth_db(config)
     return fetch_one(config, "SELECT * FROM users WHERE id = %s", (user_id,))
 
 
@@ -1298,7 +1312,7 @@ def fetch_all_users(config: DatabaseConfig) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def fetch_admin_user_count(config: DatabaseConfig) -> int:
-    init_db(config)
+    init_auth_db(config)
     row = fetch_one(config, "SELECT COUNT(*) AS count FROM users WHERE role = %s", ("admin",))
     return int(row["count"]) if row and row.get("count") is not None else 0
 
@@ -1375,6 +1389,7 @@ def update_user_active_status(
 
 
 def authenticate_user(config: DatabaseConfig, email: str, password: str) -> dict[str, Any] | None:
+    init_auth_db(config)
     user = fetch_user_by_email(config, email)
     if not user:
         return None
@@ -1393,6 +1408,7 @@ def ensure_admin_account(
     email: str,
     password: str,
 ) -> int:
+    init_auth_db(config)
     existing = fetch_user_by_email(config, email)
     if existing:
         execute_query(

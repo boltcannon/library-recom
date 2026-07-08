@@ -2053,7 +2053,7 @@ def fetch_student_dashboard_data_for_user(config: DatabaseConfig, user_id: int) 
             COUNT(*) AS attempt_count,
             AVG(
                 CASE
-                    WHEN total_questions > 0 THEN (score * 100.0 / total_questions)
+                    WHEN total_questions > 0 THEN (quiz_score * 100.0 / total_questions)
                     ELSE NULL
                 END
             ) AS avg_percent

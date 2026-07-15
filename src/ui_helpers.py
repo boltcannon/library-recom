@@ -639,6 +639,9 @@ def render_recommendation_card(row: pd.Series) -> None:
     reading_level = str(row.get("reading_level") or "Mixed").title()
     item_type = str(row.get("item_type") or "Book")
     genre_text = str(row.get("genre_tags") or item_type or "General").replace(",", " | ")
+    confidence_label = str(row.get("confidence_label") or "Good Match")
+    recommendation_track = str(row.get("recommendation_track") or "Reading Path")
+    recommendation_mode = str(row.get("recommendation_mode") or "Balanced Pick")
     summary = shorten_text(row.get("abstract", ""), max_words=52)
 
     with st.container(border=True):
@@ -652,6 +655,9 @@ def render_recommendation_card(row: pd.Series) -> None:
         st.markdown(
             f"""
             <div class="badge-row">
+                {_badge_html(confidence_label, "green")}
+                {_badge_html(recommendation_mode, "orange")}
+                {_badge_html(recommendation_track, "blue")}
                 {_badge_html(length_type, "orange")}
                 {_badge_html(reading_level, "green")}
                 {_badge_html(genre_text.title(), "blue")}
@@ -672,6 +678,9 @@ def render_recommendation_card(row: pd.Series) -> None:
             st.write(str(pages_value if pages_value else "Unknown"))
 
         st.info(explain_recommendation(row))
+        profile_note = str(row.get("profile_match_reason") or "").strip()
+        if profile_note and "balanced recommendation" not in profile_note.lower():
+            st.caption(f"Profile fit: {profile_note}")
         st.write(summary or "No summary is available for this book yet.")
         with st.expander("Peek inside this book", expanded=False):
             abstract_preview = shorten_text(row.get("abstract", ""), max_words=120)

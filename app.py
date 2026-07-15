@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any
@@ -284,12 +285,22 @@ def generate_fallback_recommendations(profile: dict[str, Any], books_df: pd.Data
     if books_df.empty:
         return []
 
+    learning_profile = profile.get("learning_profile", {}) if isinstance(profile, dict) else {}
     fallback_preferences = {
         "grade": profile.get("class_grade", ""),
         "book_type": "any",
         "topics": message,
         "length_type": "any",
         "reading_level": profile.get("reading_level", "easy") or "easy",
+        "profile_topics": ", ".join(learning_profile.get("interest_topics", [])),
+        "profile_genres": ", ".join(learning_profile.get("preferred_genres", [])),
+        "profile_lengths": ", ".join(learning_profile.get("preferred_lengths", [])),
+        "profile_subjects": ", ".join(learning_profile.get("strongest_subjects", [])),
+        "profile_concepts": ", ".join(learning_profile.get("strongest_concepts", [])),
+        "weighted_topics_json": json.dumps(learning_profile.get("weighted_topics", [])),
+        "weighted_genres_json": json.dumps(learning_profile.get("weighted_genres", [])),
+        "weighted_lengths_json": json.dumps(learning_profile.get("weighted_lengths", [])),
+        "preference_confidence": str(learning_profile.get("preference_confidence", "emerging")),
     }
     recommendations = get_recommendations_cached(
         books_df,
@@ -334,6 +345,29 @@ def store_recommendation_records_for_student(
     st.session_state["selected_book_id"] = None
     st.session_state["last_quiz_result"] = None
     st.session_state["quiz_saved"] = False
+
+
+def build_student_recommendation_preferences(
+    profile: dict[str, Any],
+    finder_state: dict[str, Any],
+    learning_profile: dict[str, Any],
+) -> dict[str, str]:
+    return {
+        "grade": profile["class_grade"],
+        "book_type": str(finder_state.get("book_type", "story")),
+        "topics": str(finder_state.get("topics", "")),
+        "length_type": str(finder_state.get("length_type", "any")),
+        "reading_level": str(finder_state.get("reading_level", "easy")),
+        "profile_topics": ", ".join(learning_profile.get("interest_topics", [])),
+        "profile_genres": ", ".join(learning_profile.get("preferred_genres", [])),
+        "profile_lengths": ", ".join(learning_profile.get("preferred_lengths", [])),
+        "profile_subjects": ", ".join(learning_profile.get("strongest_subjects", [])),
+        "profile_concepts": ", ".join(learning_profile.get("strongest_concepts", [])),
+        "weighted_topics_json": json.dumps(learning_profile.get("weighted_topics", [])),
+        "weighted_genres_json": json.dumps(learning_profile.get("weighted_genres", [])),
+        "weighted_lengths_json": json.dumps(learning_profile.get("weighted_lengths", [])),
+        "preference_confidence": str(learning_profile.get("preference_confidence", "emerging")),
+    }
 
 
 def resolve_final_concept(manual_concept: str, quick_pick: str, concept_suggestions: list[str]) -> str:
@@ -398,7 +432,13 @@ def hydrate_latest_lesson_from_sequence(sequence: dict[str, Any]) -> dict[str, A
     }
 
 
-def restore_latest_sequence_state(user_id: int, selected_book_id: int, book: dict[str, Any], profile: dict[str, Any]) -> None:
+def restore_latest_sequence_state(
+    user_id: int,
+    selected_book_id: int,
+    book: dict[str, Any],
+    profile: dict[str, Any],
+    learning_profile: dict[str, Any] | None = None,
+) -> None:
     persisted_sequence = fetch_latest_lesson_sequence_for_user(DB_CONFIG, user_id, book_id=selected_book_id)
     if not persisted_sequence:
         return
@@ -406,13 +446,21 @@ def restore_latest_sequence_state(user_id: int, selected_book_id: int, book: dic
         return
 
     latest_lesson = hydrate_latest_lesson_from_sequence(persisted_sequence)
-    latest_lesson["teach_sections"] = generate_learning_sequence(
+    regenerated_sequence = generate_learning_sequence(
         book=book,
         subject=persisted_sequence.get("subject", "English"),
         concept=persisted_sequence.get("concept", ""),
         grade=profile["class_grade"],
-    ).get("teach_sections", [])
+        student_context={
+            "reading_level": profile.get("reading_level", ""),
+            "quiz_band": (learning_profile or {}).get("quiz_band", ""),
+            "strongest_concepts": (learning_profile or {}).get("strongest_concepts", []),
+            "weak_concepts": (learning_profile or {}).get("weak_concepts", []),
+        },
+    )
+    latest_lesson["teach_sections"] = regenerated_sequence.get("teach_sections", [])
     latest_lesson["sections"] = latest_lesson["teach_sections"]
+    latest_lesson["adaptive_profile"] = regenerated_sequence.get("adaptive_profile", {})
     st.session_state["latest_lesson"] = latest_lesson
     st.session_state["story_learning_subject"] = persisted_sequence.get("subject", "English")
     st.session_state["story_learning_quick_pick"] = "I want to type my own concept"
@@ -522,6 +570,13 @@ def render_student_journey_header(
         current_step,
     )
 
+    summary_cards = [
+        {"label": "Books explored", "value": str(dashboard.get("total_books_explored", 0)), "note": "Books you opened or selected"},
+        {"label": "Saved books", "value": str(dashboard.get("total_books_saved", 0)), "note": "Stories waiting on your shelf"},
+        {"label": "Lessons started", "value": str(dashboard.get("total_lessons_generated", 0)), "note": "Learning journeys you began"},
+    ]
+    render_metric_grid(summary_cards)
+
     resume_book = get_student_resume_book(int(user["id"]))
     if resume_book and current_page != STUDENT_LEARN_PAGE:
         resume_title = str(resume_book.get("title") or "Your selected book")
@@ -553,28 +608,28 @@ def enforce_role(required_roles: set[str]) -> dict | None:
 
 
 def render_auth_page() -> None:
-    auth_options = ["Login", "Sign Up", "Admin Sign Up"]
+    auth_options = ["Login", "Student Sign Up", "Admin Setup"]
 
     render_brand_header()
     render_hero(
         "Welcome to StoryShelf",
-        "Discover library books, learn through stories, and manage the school catalog in one simple app.",
+        "Discover library books, learn through stories, and manage the school catalog in one calm, guided app.",
         kicker="Authentication",
     )
     selected_view = st.radio(
-        "Choose an option",
+        "Choose how you want to enter",
         auth_options,
         horizontal=True,
         index=max(0, auth_options.index(
-            "Admin Sign Up" if st.session_state.get("auth_view") == "admin_setup"
-            else "Sign Up" if st.session_state.get("auth_view") == "signup"
+            "Admin Setup" if st.session_state.get("auth_view") == "admin_setup"
+            else "Student Sign Up" if st.session_state.get("auth_view") == "signup"
             else "Login"
         )),
     )
-    st.caption("Students and admins use the same login form. Use `Admin Sign Up` only when you need to create the first admin account.")
+    st.caption("Students and admins use the same login form. Use Admin Setup only when you need to create the first admin account.")
     if selected_view == "Login":
         st.session_state["auth_view"] = "login"
-    elif selected_view == "Admin Sign Up":
+    elif selected_view == "Admin Setup":
         st.session_state["auth_view"] = "admin_setup"
     else:
         st.session_state["auth_view"] = "signup"
@@ -596,9 +651,9 @@ def render_auth_page() -> None:
                     set_current_page(default_page_for_role(str(user.get("role", "student"))))
                     reset_student_learning_state()
                     st.rerun()
-    elif selected_view == "Sign Up":
+    elif selected_view == "Student Sign Up":
         with st.container(border=True):
-            st.markdown("### Sign Up")
+            st.markdown("### Student Sign Up")
             st.caption("Create a student account to begin your reading journey.")
             with st.form("signup_form"):
                 full_name = st.text_input("Full name", key="signup_full_name")
@@ -628,11 +683,11 @@ def render_auth_page() -> None:
                             st.session_state["auth_user"] = fetch_user_by_id(DB_CONFIG, user_id)
                             set_current_page(default_page_for_role("student"))
                             reset_student_learning_state()
-                            st.success("Student account created.")
+                            st.success("Student account created. You can now complete the profile and start exploring books.")
                             st.rerun()
     else:
         with st.container(border=True):
-            st.markdown("### Admin Sign Up")
+            st.markdown("### Admin Setup")
             st.caption("Create the first admin account. After that, new admin accounts can be created from User Management.")
             with st.form("first_admin_form"):
                 full_name = st.text_input("Admin full name", value="School Admin", key="admin_signup_full_name")
@@ -707,11 +762,14 @@ def render_student_profile_manager() -> None:
     profile = fetch_student_profile_for_user(DB_CONFIG, int(user["id"]))
     current_profile = {
         "name": user.get("full_name", ""),
-        "grade": profile.get("class_grade", "4") if profile else "4",
+        "grade": profile.get("class_grade", "") if profile else "",
         "preferred_language": profile.get("preferred_language", "English") if profile else "English",
         "favorite_topics": profile.get("favorite_topics", "") if profile else "",
         "reading_level": profile.get("reading_level", "easy") if profile else "easy",
     }
+    grade_options = ["Select grade"] + [str(level) for level in range(1, 13)]
+    selected_grade = str(current_profile.get("grade", "") or "")
+    grade_index = grade_options.index(selected_grade) if selected_grade in grade_options else 0
 
     render_section_heading("Your profile", "This helps StoryShelf suggest books that fit you better.")
     with st.container(border=True):
@@ -724,6 +782,10 @@ def render_student_profile_manager() -> None:
                 st.caption(f"Favorite topics: {current_profile['favorite_topics']}")
             profile_container = st.expander("Edit profile", expanded=False)
         else:
+            render_status_tip(
+                "Profile needed",
+                "Complete this once so StoryShelf can personalize book suggestions and lesson difficulty for you.",
+            )
             profile_container = st.container()
 
         with profile_container:
@@ -731,8 +793,8 @@ def render_student_profile_manager() -> None:
                 name = st.text_input("Student name", value=current_profile.get("name", ""), key="student_profile_name")
                 grade = st.selectbox(
                     "Class / grade",
-                    [str(level) for level in range(1, 13)],
-                    index=max(0, [str(level) for level in range(1, 13)].index(str(current_profile.get("grade", "4"))) if str(current_profile.get("grade", "4")) in [str(level) for level in range(1, 13)] else 3),
+                    grade_options,
+                    index=grade_index,
                     key="student_profile_grade",
                 )
                 preferred_language = st.selectbox(
@@ -758,6 +820,8 @@ def render_student_profile_manager() -> None:
             if saved:
                 if not name.strip():
                     st.error("Please enter the student's name.")
+                elif grade == "Select grade":
+                    st.error("Please choose the student's class or grade.")
                 else:
                     save_student_profile_for_user(
                         DB_CONFIG,
@@ -793,11 +857,12 @@ def home_page() -> None:
     render_brand_header(role)
     render_hero(
         "Welcome to StoryShelf",
-        "A playful school library experience where children discover books, save their reading journey, and turn stories into simple lessons.",
+        "A school library experience where students discover books, save their journey, and learn through guided story-based lessons.",
         kicker="Welcome",
     )
     if role == "student" and user:
         dashboard = fetch_student_dashboard_data_for_user(DB_CONFIG, int(user["id"]))
+        learning_profile = dashboard.get("learning_profile", {})
         render_metric_grid(
             [
                 {"label": "Books explored", "value": str(dashboard["total_books_explored"]), "note": "Stories you have opened or chosen"},
@@ -808,10 +873,10 @@ def home_page() -> None:
         )
         col1, col2 = st.columns([1.05, 0.95])
         with col1:
-            render_section_heading("Continue your reading adventure", "Move through the app like a guided journey instead of a big form.")
+            render_section_heading("Continue your reading journey", "Move through the app step by step instead of jumping between unrelated screens.")
             render_status_tip(
                 "Suggested path",
-                "Start in My Progress, then visit Discover Books, save a title in My Books, and finish in Learn.",
+                "Start in My Progress, then discover a book, save it to My Books, and finish in Learn.",
             )
             if dashboard["favorite_topics"]:
                 render_status_tip("Favorite topics", dashboard["favorite_topics"])
@@ -820,11 +885,39 @@ def home_page() -> None:
             if dashboard.get("recent_concepts_learned"):
                 render_status_tip("Recent concepts", ", ".join(dashboard["recent_concepts_learned"]))
         with col2:
-            render_section_heading("Recent activity", "Your newest actions show up here so it is easy to continue where you left off.")
+            render_section_heading("Recent activity", "Your newest actions show up here so you can continue where you left off.")
             if dashboard["recent_activity"].empty:
-                render_empty_state("Your reading timeline is waiting", "Save your profile and ask for book recommendations to start your story journey.", "🚀")
+                render_empty_state("Your reading timeline is waiting", "Save your profile and ask for book recommendations to begin your first reading journey.", "🚀")
             else:
                 st.dataframe(dashboard["recent_activity"], use_container_width=True, hide_index=True)
+        if learning_profile:
+            summary_col1, summary_col2 = st.columns(2)
+            with summary_col1:
+                render_status_tip(
+                    "Your learning rhythm",
+                    (
+                        f"{learning_profile.get('quiz_band', 'growing').title()} learner with favorite topics like "
+                        f"{', '.join(learning_profile.get('favorite_topics', [])[:3]) or 'new discoveries on the way'}."
+                    ),
+                )
+            with summary_col2:
+                render_status_tip(
+                    "Next best move",
+                    learning_profile.get("next_focus") or "Discover a new book to unlock a personalized next step.",
+                )
+        action_col1, action_col2, action_col3 = st.columns(3)
+        with action_col1:
+            if st.button("Open My Progress", key="home_open_progress", type="primary", use_container_width=True):
+                set_current_page(STUDENT_PROGRESS_PAGE)
+                st.rerun()
+        with action_col2:
+            if st.button("Discover Books", key="home_discover_books", use_container_width=True):
+                set_current_page(STUDENT_DISCOVER_PAGE)
+                st.rerun()
+        with action_col3:
+            if st.button("Go to Learn", key="home_go_learn", use_container_width=True):
+                set_current_page(STUDENT_LEARN_PAGE)
+                st.rerun()
     else:
         metrics = fetch_dashboard_metrics(DB_CONFIG)
         render_metric_grid(
@@ -842,9 +935,9 @@ def home_page() -> None:
         render_section_heading("Admin control center", "Keep the app calm and school-ready by managing the catalog, lessons, and users from one place.")
         col1, col2 = st.columns(2)
         with col1:
-            render_status_tip("What to check first", "Review the dashboard, then make sure the catalog is uploaded and lesson review is ready.")
+            render_status_tip("What to check first", "Review the dashboard, then make sure the catalog is uploaded and student insights are healthy.")
         with col2:
-            render_status_tip("What students see", "Students get a guided reading flow with book cards, story-based lessons, quiz mode, and a clean progress dashboard.")
+            render_status_tip("What students see", "Students get a guided reading flow with recommendations, adaptive lessons, quizzes, and progress tracking.")
 
 
 def admin_page() -> None:
@@ -889,7 +982,7 @@ def student_dashboard_page() -> None:
         user=user,
         current_page=STUDENT_PROGRESS_PAGE,
         title="My Progress",
-        body="See your reading journey, update your profile, and continue the next step without hunting across pages.",
+        body="See your reading journey, update your profile, and continue the next best step without hunting across pages.",
         kicker="Student progress",
     )
     render_student_profile_manager()
@@ -898,6 +991,7 @@ def student_dashboard_page() -> None:
         return
 
     dashboard = fetch_student_dashboard_data_for_user(DB_CONFIG, int(user["id"]))
+    learning_profile = dashboard.get("learning_profile", {})
     render_metric_grid(
         [
             {"label": "Books explored", "value": str(dashboard["total_books_explored"]), "note": "Books you visited or selected"},
@@ -922,6 +1016,52 @@ def student_dashboard_page() -> None:
     render_status_tip("Lessons completed", str(dashboard["total_lessons_completed"]))
     if dashboard.get("recent_concepts_learned"):
         render_status_tip("Recent concepts learned", ", ".join(dashboard["recent_concepts_learned"]))
+    if learning_profile:
+        insight_col1, insight_col2 = st.columns(2)
+        with insight_col1:
+            render_status_tip(
+                "Learning profile",
+                (
+                    f"{learning_profile.get('quiz_band', 'growing').title()} learner"
+                    if learning_profile.get("quiz_band")
+                    else "Your learning profile will grow as you explore more books."
+                ),
+            )
+            render_status_tip(
+                "Preferred book styles",
+                ", ".join(learning_profile.get("preferred_genres", []))
+                or "Your favorite book styles will appear here after you explore more titles.",
+            )
+        with insight_col2:
+            render_status_tip(
+                "Strongest subjects",
+                ", ".join(learning_profile.get("strongest_subjects", []))
+                or "Your strongest subjects will appear here after a few lessons.",
+            )
+            render_status_tip(
+                "Next focus",
+                learning_profile.get("next_focus") or "Complete one more lesson to unlock a next-step suggestion.",
+            )
+    memory_col1, memory_col2 = st.columns(2)
+    with memory_col1:
+        remembered_topics = learning_profile.get("interest_topics", [])
+        remembered_genres = learning_profile.get("preferred_genres", [])
+        render_status_tip(
+            "What StoryShelf remembers",
+            (
+                f"Topics: {', '.join(remembered_topics[:3]) or 'none yet'} | Genres: {', '.join(remembered_genres[:2]) or 'none yet'}"
+            ),
+        )
+    with memory_col2:
+        mastered_concepts = learning_profile.get("mastered_concepts", [])
+        weak_concepts = learning_profile.get("weak_concepts", [])
+        render_status_tip(
+            "Concept mastery",
+            (
+                f"Strongest: {', '.join(mastered_concepts[:2]) or 'none yet'} | Needs support: {', '.join(weak_concepts[:2]) or 'none yet'}"
+            ),
+        )
+    st.caption(f"Preference confidence: {str(learning_profile.get('preference_confidence', 'emerging')).title()}")
 
     render_section_heading("Recent activity", "These are the newest things you did across reading, lessons, and quiz practice.")
     if dashboard["recent_activity"].empty:
@@ -932,14 +1072,16 @@ def student_dashboard_page() -> None:
     else:
         st.dataframe(dashboard["recent_activity"], use_container_width=True, hide_index=True)
 
-    render_section_heading("Your history", "Browse your reading trail, recommendations, selected books, lessons, and quiz results.")
-    history_tabs = st.tabs(["Reading History", "Recommended Books", "Selected Books", "Generated Lessons", "Quiz History"])
+    render_section_heading("Your history", "Browse your reading trail, recommendations, selected books, lessons, and quiz results in one place.")
+    history_tabs = st.tabs(["Reading History", "Recommended Books", "Selected Books", "Generated Lessons", "Quiz History", "Preference Memory", "Concept Mastery"])
     history_frames = [
         dashboard["reading_history"].drop(columns=["book_id"], errors="ignore"),
         dashboard["recommended_history"],
         dashboard["selected_history"].drop(columns=["book_id"], errors="ignore"),
         dashboard["lesson_history"].drop(columns=["book_id", "sequence_id"], errors="ignore"),
         dashboard["quiz_history"].drop(columns=["book_id"], errors="ignore"),
+        dashboard["preference_memory"].drop(columns=["updated_at"], errors="ignore"),
+        dashboard["concept_mastery"].drop(columns=["updated_at"], errors="ignore"),
     ]
     empty_messages = [
         "No saved or finished books yet.",
@@ -947,6 +1089,8 @@ def student_dashboard_page() -> None:
         "No chosen books yet.",
         "No lessons yet.",
         "No quiz history yet.",
+        "No preference memory yet.",
+        "No concept mastery yet.",
     ]
     for tab, frame, message in zip(history_tabs, history_frames, empty_messages):
         with tab:
@@ -993,6 +1137,13 @@ def my_books_page() -> None:
 
     dashboard = fetch_student_dashboard_data_for_user(DB_CONFIG, int(user["id"]))
     reading_history = dashboard["reading_history"].copy()
+    render_metric_grid(
+        [
+            {"label": "Saved for later", "value": str(dashboard["total_books_saved"]), "note": "Books you can reopen any time"},
+            {"label": "Finished books", "value": str(dashboard["total_books_marked_as_read"]), "note": "Books you marked as read"},
+            {"label": "Lessons ready", "value": str(dashboard["total_lessons_generated"]), "note": "Learning journeys linked to your books"},
+        ]
+    )
     if reading_history.empty:
         render_empty_state("No saved books yet", "Save a book from Discover Books and it will show up here for quick access later.", "📚")
         if st.button("Go to Discover Books", key="my_books_empty_discover", type="primary", use_container_width=True):
@@ -1172,7 +1323,7 @@ def student_page() -> None:
         user=user,
         current_page=STUDENT_DISCOVER_PAGE,
         title="Discover Books",
-        body="Answer a few simple questions and StoryShelf will suggest books that fit your interests, comfort level, and favorite topics.",
+        body="Chat with StoryShelf or use the quick path below to find books that match your interests, comfort level, and favorite topics.",
         kicker="Student journey",
     )
     books_df = fetch_all_books(DB_CONFIG)
@@ -1184,6 +1335,9 @@ def student_page() -> None:
     profile = require_student_profile()
     if not profile:
         return
+    student_dashboard = fetch_student_dashboard_data_for_user(DB_CONFIG, int(user["id"]))
+    learning_profile = student_dashboard.get("learning_profile", {})
+    profile = {**profile, "learning_profile": learning_profile}
 
     render_recommendation_chat(user, profile, books_df)
 
@@ -1202,14 +1356,14 @@ def student_page() -> None:
     finder_state.setdefault("reading_level", profile.get("reading_level", "easy") or "easy")
     finder_step = int(st.session_state.get("finder_step", 1))
 
-    render_chat_bubble(f"If you want a faster backup path, I can also suggest books from a few quick choices below.")
+    render_chat_bubble("If you want a faster backup path, use the quick choices below and StoryShelf will build a short recommendation list for you.")
     render_progress_steps(
         ["Choose a style", "Share topics", "Pick a length", "Pick reading comfort", "See your books"],
         min(finder_step, 5),
     )
 
     with st.container(border=True):
-        render_section_heading("Quick recommendation path", "Use this if you want simple pickers instead of a free chat.")
+        render_section_heading("Quick recommendation path", "Use this if you want simple pickers instead of the chat.")
         if profile.get("preferred_language"):
             st.caption(f"Preferred language: {profile['preferred_language']}")
 
@@ -1282,19 +1436,20 @@ def student_page() -> None:
                     st.session_state["finder_step"] = 5
                     st.rerun()
 
-    preferences = {
-        "grade": profile["class_grade"],
-        "book_type": str(finder_state.get("book_type", "story")),
-        "topics": str(finder_state.get("topics", "")),
-        "length_type": str(finder_state.get("length_type", "any")),
-        "reading_level": str(finder_state.get("reading_level", "easy")),
-    }
+    preferences = build_student_recommendation_preferences(profile, finder_state, learning_profile)
 
     if finder_step >= 5:
         render_status_tip(
             "Your reading recipe",
             f"Grade {preferences['grade']} · {preferences['book_type'].title()} books · {preferences['length_type']} length · {preferences['reading_level']} reading",
         )
+        if learning_profile.get("interest_topics") or learning_profile.get("preferred_genres"):
+            profile_boost_bits = [
+                *learning_profile.get("interest_topics", [])[:2],
+                *learning_profile.get("preferred_genres", [])[:1],
+            ]
+            if profile_boost_bits:
+                st.caption(f"Profile boost: StoryShelf is also using your recent interests like {', '.join(profile_boost_bits)}.")
         col1, col2 = st.columns([1, 1])
         with col1:
             if st.button("Change my answers", use_container_width=True):
@@ -1410,7 +1565,7 @@ def story_learning_page() -> None:
         user=user,
         current_page=STUDENT_LEARN_PAGE,
         title="Learn",
-        body="Turn a selected book into a guided learning sequence with teaching, reflection, practice, and a final pass check.",
+        body="Turn a selected book into a guided learning sequence with teaching, reflection, practice, and a final pass check without losing your place.",
         kicker="Lesson builder",
     )
     books_df = fetch_all_books(DB_CONFIG)
@@ -1422,6 +1577,8 @@ def story_learning_page() -> None:
     profile = require_student_profile()
     if not profile:
         return
+    student_dashboard = fetch_student_dashboard_data_for_user(DB_CONFIG, int(user["id"]))
+    learning_profile = student_dashboard.get("learning_profile", {})
 
     recommended_books = [
         book for book in st.session_state.get("recommended_books", [])
@@ -1467,7 +1624,7 @@ def story_learning_page() -> None:
         st.error("The selected book could not be loaded.")
         return
 
-    restore_latest_sequence_state(int(user["id"]), int(selected_book_id), book, profile)
+    restore_latest_sequence_state(int(user["id"]), int(selected_book_id), book, profile, learning_profile)
 
     with right_col:
         render_book_snapshot(book, "Selected book")
@@ -1487,6 +1644,17 @@ def story_learning_page() -> None:
         selected_concept = resolve_final_concept(concept, quick_pick, concept_suggestions)
         if selected_concept:
             st.caption(f"Final concept: {selected_concept}")
+        adaptive_summary = []
+        if profile.get("reading_level"):
+            adaptive_summary.append(f"{profile['reading_level']} reading")
+        if learning_profile.get("quiz_band"):
+            adaptive_summary.append(f"{learning_profile['quiz_band']} quiz path")
+        if learning_profile.get("weak_concepts"):
+            adaptive_summary.append(f"extra support for {', '.join(learning_profile['weak_concepts'][:2])}")
+        elif learning_profile.get("strongest_concepts"):
+            adaptive_summary.append(f"builds on {', '.join(learning_profile['strongest_concepts'][:2])}")
+        if adaptive_summary:
+            st.caption("Adaptive lesson mode: " + " · ".join(adaptive_summary))
 
     if st.button("Create Learning Sequence", type="primary", use_container_width=True):
         with st.spinner("Building your learning sequence..."):
@@ -1507,6 +1675,12 @@ def story_learning_page() -> None:
                 subject=subject,
                 concept=selected_concept,
                 grade=profile["class_grade"],
+                student_context={
+                    "reading_level": profile.get("reading_level", ""),
+                    "quiz_band": learning_profile.get("quiz_band", ""),
+                    "strongest_concepts": learning_profile.get("strongest_concepts", []),
+                    "weak_concepts": learning_profile.get("weak_concepts", []),
+                },
             )
 
         lesson_text = sequence.get("sequence_text") or lesson_sections_to_text(sequence.get("teach_sections", []))
@@ -1559,6 +1733,7 @@ def story_learning_page() -> None:
             "retry_count": 0,
             "passed": False,
             "mode": sequence.get("mode", "lesson"),
+            "adaptive_profile": sequence.get("adaptive_profile", {}),
         }
         st.session_state["feedback_saved"] = False
         st.session_state["last_quiz_result"] = None
@@ -1580,6 +1755,13 @@ def story_learning_page() -> None:
         else:
             render_section_heading("Your learning sequence", "Work through each stage in order to build understanding step by step.")
         st.write(f"**Lesson concept:** {latest_lesson.get('concept', selected_concept)}")
+        adaptive_profile = latest_lesson.get("adaptive_profile", {})
+        if adaptive_profile:
+            support_mode = str(adaptive_profile.get("support_mode", "balanced")).replace("_", " ")
+            if support_mode == "scaffolded":
+                st.info("This lesson is using extra support mode so each step stays short and clear.")
+            elif support_mode == "stretch":
+                st.info("This lesson is using stretch mode so you can explain your thinking a little more deeply.")
 
         if latest_lesson["warning"]:
             st.warning(latest_lesson["warning"])
@@ -1628,8 +1810,10 @@ def story_learning_page() -> None:
                         book,
                         subject,
                         latest_lesson.get("concept", selected_concept),
+                        profile["class_grade"],
                         latest_lesson.get("fit_result", {}),
                         reflect_answer,
+                        latest_lesson.get("adaptive_profile", {}),
                     )
                     if latest_lesson.get("sequence_id"):
                         update_lesson_sequence(
@@ -1668,8 +1852,10 @@ def story_learning_page() -> None:
                         book,
                         subject,
                         latest_lesson.get("concept", selected_concept),
+                        profile["class_grade"],
                         latest_lesson.get("fit_result", {}),
                         activity_answer,
+                        latest_lesson.get("adaptive_profile", {}),
                     )
                     if latest_lesson.get("sequence_id"):
                         update_lesson_sequence(
@@ -1693,6 +1879,8 @@ def story_learning_page() -> None:
         quiz_questions = latest_lesson.get("quiz_questions", [])
         if quiz_questions and lesson_mode != "fit_warning":
             render_section_heading("Stage 4: Quiz", "Finish the final check to see whether you pass this learning sequence.")
+            pass_threshold = quiz_questions[0].get("pass_threshold", 60.0) if quiz_questions else 60.0
+            st.caption(f"Pass target: {pass_threshold:.0f}%")
             with st.container(border=True):
                 with st.form(f"lesson_quiz_form_{latest_lesson['lesson_log_id']}_{latest_lesson.get('retry_count', 0)}"):
                     quiz_answers: list[str] = []
@@ -1768,6 +1956,7 @@ def story_learning_page() -> None:
                 st.success(f"You passed: {result['score']} / {result['total_questions']} ({result['percentage']}%)")
             else:
                 st.warning(f"Not passed yet: {result['score']} / {result['total_questions']} ({result['percentage']}%)")
+            st.caption(f"Pass target for this quiz: {result.get('pass_threshold', 60.0):.0f}%")
             st.write(result["summary"])
             st.write(result["review_summary"])
             for item in result["results"]:
@@ -1786,6 +1975,7 @@ def story_learning_page() -> None:
                         latest_lesson.get("concept", selected_concept),
                         profile["class_grade"],
                         latest_lesson.get("fit_result", {}),
+                        latest_lesson.get("adaptive_profile", {}),
                         simplified=True,
                     )
                     latest_lesson["quiz_result"] = None
@@ -1865,6 +2055,7 @@ def admin_dashboard_page() -> None:
                 "value": f"{metrics['guided_pass_rate']}%" if metrics["guided_pass_rate"] is not None else "No quiz results yet",
                 "note": "Share of completed sequences that passed",
             },
+            {"label": "Needs support", "value": str(metrics["support_needed_count"]), "note": "Sequences that were retried or did not pass yet"},
         ]
     )
     col1, col2 = st.columns(2)
@@ -1872,6 +2063,54 @@ def admin_dashboard_page() -> None:
         render_status_tip("Catalog focus", "Keep the book catalog fresh so recommendations stay meaningful for students.")
     with col2:
         render_status_tip("Admin focus", "Review lesson quality, watch student activity, and keep user access tidy.")
+    attention_col1, attention_col2, attention_col3 = st.columns(3)
+    with attention_col1:
+        render_status_tip(
+            "Needs attention",
+            (
+                f"{metrics['support_needed_count']} learning sequences need another try."
+                if metrics["support_needed_count"] > 0
+                else "No learning support hotspots are showing right now."
+            ),
+        )
+    with attention_col2:
+        render_status_tip(
+            "Catalog status",
+            "Catalog is ready for students." if metrics["total_books"] > 0 else "Upload a catalog so students can begin discovering books.",
+        )
+    with attention_col3:
+        render_status_tip(
+            "Feedback signal",
+            (
+                f"Average student rating is {metrics['average_feedback_rating']:.2f} out of 5."
+                if metrics["average_feedback_rating"] is not None
+                else "Feedback will appear after students finish lessons."
+            ),
+        )
+
+    render_section_heading("Student interest signals", "See what students care about most so future catalog and lesson choices stay relevant.")
+    interest_col1, interest_col2, interest_col3 = st.columns(3)
+    with interest_col1:
+        if metrics["remembered_topics"].empty:
+            render_empty_state("No remembered topics yet", "StoryShelf will start remembering student interests after discovery and reading activity grows.", "📚")
+        else:
+            with st.container(border=True):
+                st.caption("Remembered topics")
+                st.dataframe(metrics["remembered_topics"], use_container_width=True, hide_index=True)
+    with interest_col2:
+        if metrics["recommendation_themes"].empty:
+            render_empty_state("No recommendation themes yet", "Recommendation requests will appear here after students start discovering books.", "💬")
+        else:
+            with st.container(border=True):
+                st.caption("Requested themes")
+                st.dataframe(metrics["recommendation_themes"], use_container_width=True, hide_index=True)
+    with interest_col3:
+        if metrics["top_genres"].empty:
+            render_empty_state("No genre trends yet", "Genre interest appears once students start selecting books.", "🏷️")
+        else:
+            with st.container(border=True):
+                st.caption("Top genres")
+                st.dataframe(metrics["top_genres"], use_container_width=True, hide_index=True)
 
     render_section_heading("Most selected books", "These are the titles students are choosing most often.")
     most_selected_books = metrics["most_selected_books"]
@@ -1888,6 +2127,47 @@ def admin_dashboard_page() -> None:
     else:
         with st.container(border=True):
             st.dataframe(metrics["most_attempted_concepts"], use_container_width=True, hide_index=True)
+
+    render_section_heading("Learning effectiveness", "These views show which books and concepts are turning into successful learning.")
+    effectiveness_col1, effectiveness_col2 = st.columns(2)
+    with effectiveness_col1:
+        if metrics["lesson_effectiveness_books"].empty:
+            render_empty_state("No lesson conversion data yet", "Books that lead to lessons and passed quizzes will appear here.", "🧠")
+        else:
+            with st.container(border=True):
+                st.caption("Books leading to lessons")
+                st.dataframe(metrics["lesson_effectiveness_books"], use_container_width=True, hide_index=True)
+    with effectiveness_col2:
+        if metrics["concept_effectiveness"].empty:
+            render_empty_state("No concept effectiveness data yet", "Concept pass trends will appear here after guided learning begins.", "✅")
+        else:
+            with st.container(border=True):
+                st.caption("Concept pass trends")
+                st.dataframe(metrics["concept_effectiveness"], use_container_width=True, hide_index=True)
+
+    render_section_heading("Support watch", "Use these views to spot where students need extra help.")
+    support_col1, support_col2 = st.columns(2)
+    with support_col1:
+        if metrics["subject_scores"].empty:
+            render_empty_state("No subject score trends yet", "Average subject scores will appear here after quiz results are saved.", "📊")
+        else:
+            with st.container(border=True):
+                st.caption("Average score by subject")
+                st.dataframe(metrics["subject_scores"], use_container_width=True, hide_index=True)
+    with support_col2:
+        if metrics["struggling_concepts"].empty:
+            render_empty_state("No support hotspots yet", "Concepts that need retries or extra support will appear here.", "🛟")
+        else:
+            with st.container(border=True):
+                st.caption("Concepts needing support")
+                st.dataframe(metrics["struggling_concepts"], use_container_width=True, hide_index=True)
+
+    render_section_heading("Mastery snapshot", "See how concept mastery is building across the student group.")
+    if metrics["mastery_bands"].empty:
+        render_empty_state("No mastery records yet", "Mastery levels will appear once students complete quizzes.", "🌱")
+    else:
+        with st.container(border=True):
+            st.dataframe(metrics["mastery_bands"], use_container_width=True, hide_index=True)
 
 
 def admin_user_management_page() -> None:

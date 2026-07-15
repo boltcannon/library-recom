@@ -134,6 +134,57 @@ def get_grade_profile(grade: str) -> dict[str, str]:
     return {"label": f"class {grade_value}", "tone": "clear, slightly more detailed, and age-appropriate"}
 
 
+def build_student_adaptive_profile(
+    grade: str,
+    student_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    grade_profile = get_grade_profile(grade)
+    context = student_context or {}
+    reading_level = normalize_text(context.get("reading_level", "") or "easy")
+    quiz_band = normalize_text(context.get("quiz_band", "") or "growing")
+    strongest_concepts = [str(item) for item in context.get("strongest_concepts", []) if str(item).strip()]
+    weak_concepts = [str(item) for item in context.get("weak_concepts", []) if str(item).strip()]
+
+    support_mode = "balanced"
+    pass_threshold = 60.0
+    quiz_depth = "standard"
+    reflect_min_words = 6
+    activity_min_words = 8
+
+    if quiz_band in {"needs support", "just getting started"} or reading_level == "easy":
+        support_mode = "scaffolded"
+        pass_threshold = 50.0
+        quiz_depth = "guided"
+        reflect_min_words = 4
+        activity_min_words = 6
+    elif quiz_band == "confident" and reading_level in {"medium", "challenging"}:
+        support_mode = "stretch"
+        pass_threshold = 70.0
+        quiz_depth = "stretch"
+        reflect_min_words = 8
+        activity_min_words = 10
+
+    tone = grade_profile["tone"]
+    if support_mode == "scaffolded":
+        tone = f"{tone}, with short steps and very direct language"
+    elif support_mode == "stretch":
+        tone = f"{tone}, with slightly deeper reasoning and clearer subject vocabulary"
+
+    return {
+        "grade_profile": grade_profile,
+        "reading_level": reading_level,
+        "quiz_band": quiz_band or "growing",
+        "support_mode": support_mode,
+        "pass_threshold": pass_threshold,
+        "quiz_depth": quiz_depth,
+        "reflect_min_words": reflect_min_words,
+        "activity_min_words": activity_min_words,
+        "strongest_concepts": strongest_concepts,
+        "weak_concepts": weak_concepts,
+        "tone": tone,
+    }
+
+
 def extract_numbers(text: str) -> list[int]:
     return [int(value) for value in re.findall(r"\b\d+\b", text)]
 
@@ -316,8 +367,16 @@ def score_concept_fit(book: dict[str, Any], subject: str, concept: str) -> dict[
     }
 
 
-def build_prompt(book: dict[str, Any], subject: str, concept: str, grade: str, fit_result: dict[str, Any]) -> str:
-    grade_profile = get_grade_profile(grade)
+def build_prompt(
+    book: dict[str, Any],
+    subject: str,
+    concept: str,
+    grade: str,
+    fit_result: dict[str, Any],
+    student_context: dict[str, Any] | None = None,
+) -> str:
+    adaptive_profile = build_student_adaptive_profile(grade, student_context)
+    grade_profile = adaptive_profile["grade_profile"]
     reference_sentence = extract_reference_sentence(book)
     return f"""
 You are creating student-facing learning material.
@@ -328,9 +387,11 @@ Rules:
 - Write directly to the student, not to a teacher.
 - Do not say things like "ask students to", "underline the words", or "explain the idea".
 - Make the content educationally strong and concrete.
-- Keep the language {grade_profile["tone"]} for {grade_profile["label"]}.
+- Keep the language {adaptive_profile["tone"]} for {grade_profile["label"]}.
 - The concept fit is {fit_result["level"]}. Support terms: {", ".join(fit_result["matched_terms"] + fit_result["matched_keywords"][:3]) or "none"}.
 - Use the book context meaningfully.
+- Learning support mode: {adaptive_profile["support_mode"]}.
+- Quiz confidence band: {adaptive_profile["quiz_band"]}.
 
 Book title: {book.get("title", "")}
 Book abstract: {book.get("abstract", "")}
@@ -576,31 +637,59 @@ def build_examples_questions_answers(book: dict[str, Any], subject: str, concept
     return _build_values_examples(book, concept)
 
 
-def build_concept_explanation(subject: str, concept: str, grade: str) -> str:
+def build_concept_explanation(
+    subject: str,
+    concept: str,
+    grade: str,
+    student_context: dict[str, Any] | None = None,
+) -> str:
     concept_text = concept.title()
+    adaptive_profile = build_student_adaptive_profile(grade, student_context)
+    support_mode = adaptive_profile["support_mode"]
     if subject == "Math":
-        return f"{concept_text} helps you notice amounts, compare them, and explain your answer with clear number thinking."
-    if subject == "Science":
-        return f"{concept_text} helps you use real details to notice, describe, and explain what is happening in the natural world."
-    if subject == "English":
-        return f"{concept_text} helps you understand the main message of a text and say it clearly in your own words."
-    if subject == "Social Science":
-        return f"{concept_text} helps you understand people, events, and how actions or changes shape communities over time."
-    return f"{concept_text} helps you notice the choices and actions that matter in real life and why they matter."
+        base = f"{concept_text} helps you notice amounts, compare them, and explain your answer with clear number thinking."
+    elif subject == "Science":
+        base = f"{concept_text} helps you use real details to notice, describe, and explain what is happening in the natural world."
+    elif subject == "English":
+        base = f"{concept_text} helps you understand the main message of a text and say it clearly in your own words."
+    elif subject == "Social Science":
+        base = f"{concept_text} helps you understand people, events, and how actions or changes shape communities over time."
+    else:
+        base = f"{concept_text} helps you notice the choices and actions that matter in real life and why they matter."
+
+    if support_mode == "scaffolded":
+        return f"{base} Start with one clear idea from the book, then connect it to the concept in one simple step."
+    if support_mode == "stretch":
+        return f"{base} Try to explain not only what the concept is, but also why it works in this book context."
+    return base
 
 
-def build_activity(book: dict[str, Any], subject: str, concept: str) -> str:
+def build_activity(
+    book: dict[str, Any],
+    subject: str,
+    concept: str,
+    grade: str,
+    student_context: dict[str, Any] | None = None,
+) -> str:
     sentence = extract_reference_sentence(book)
     context_phrase = build_book_context_phrase(book)
+    adaptive_profile = build_student_adaptive_profile(grade, student_context)
+    support_mode = adaptive_profile["support_mode"]
     if subject == "Math":
-        return f"Use the book ideas about {context_phrase} to write one math statement with {concept}. After that, explain in one sentence how your math idea matches the book."
-    if subject == "Science":
-        return f"Choose two science words or ideas from this line: {sentence} Then write one sentence that shows how they connect to {concept}."
-    if subject == "English":
-        return f"Write two sentences that show {concept} in this book. Both sentences must stay close to this idea: {sentence}"
-    if subject == "Social Science":
-        return f"Write two lines that use one real detail from the abstract to show {concept} in people, society, or history."
-    return f"Write two lines that show how {concept} appears in this book and why that value matters."
+        prompt = f"Use the book ideas about {context_phrase} to write one math statement with {concept}. After that, explain in one sentence how your math idea matches the book."
+    elif subject == "Science":
+        prompt = f"Choose two science words or ideas from this line: {sentence} Then write one sentence that shows how they connect to {concept}."
+    elif subject == "English":
+        prompt = f"Write two sentences that show {concept} in this book. Both sentences must stay close to this idea: {sentence}"
+    elif subject == "Social Science":
+        prompt = f"Write two lines that use one real detail from the abstract to show {concept} in people, society, or history."
+    else:
+        prompt = f"Write two lines that show how {concept} appears in this book and why that value matters."
+    if support_mode == "scaffolded":
+        return prompt + " Keep it short and use one clear book detail."
+    if support_mode == "stretch":
+        return prompt + " Add one line that explains why your example is a strong concept match."
+    return prompt
 
 
 def build_fit_guidance_sections(book: dict[str, Any], subject: str, concept: str, fit_result: dict[str, Any]) -> list[tuple[str, Any]]:
@@ -623,6 +712,7 @@ def build_fallback_lesson(
     concept: str,
     grade: str,
     fit_result: dict[str, Any],
+    student_context: dict[str, Any] | None = None,
 ) -> list[tuple[str, Any]]:
     title = str(book.get("title", "this book")).strip() or "this book"
     reference_sentence = extract_reference_sentence(book)
@@ -636,10 +726,10 @@ def build_fallback_lesson(
         why_fit = f"{title} can support {concept} because the abstract gives enough clues through {support_text}."
     else:
         why_fit = f"{title} is a lighter match for {concept}, but it still gives enough context through {support_text}."
-    concept_explanation = build_concept_explanation(subject, concept, grade)
+    concept_explanation = build_concept_explanation(subject, concept, grade, student_context)
     example_lines = examples[:3]
     reminder = f"Remember: keep using real book ideas such as {context_phrase} while you practice {concept.title()}."
-    activity = build_activity(book, subject, concept)
+    activity = build_activity(book, subject, concept, grade, student_context)
     return [
         ("Why this concept fits this book", why_fit),
         ("Simple concept explanation", f"{concept_explanation} In this book, the key idea we are using is: {reference_sentence}"),
@@ -822,6 +912,7 @@ def generate_openai_lesson(
     concept: str,
     grade: str,
     fit_result: dict[str, Any],
+    student_context: dict[str, Any] | None = None,
 ) -> tuple[list[tuple[str, Any]] | None, str]:
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key or OpenAI is None:
@@ -831,7 +922,7 @@ def generate_openai_lesson(
         client = OpenAI(api_key=api_key)
         response = client.responses.create(
             model="gpt-4.1-mini",
-            input=build_prompt(book, subject, concept, grade, fit_result),
+            input=build_prompt(book, subject, concept, grade, fit_result, student_context),
         )
         content = response.output_text.strip()
         return parse_lesson_text(content), ""
@@ -839,7 +930,13 @@ def generate_openai_lesson(
         return None, FALLBACK_NOTICE
 
 
-def generate_lesson(book: dict[str, Any], subject: str, concept: str, grade: str) -> dict[str, Any]:
+def generate_lesson(
+    book: dict[str, Any],
+    subject: str,
+    concept: str,
+    grade: str,
+    student_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if not str(book.get("abstract", "")).strip():
         return build_missing_abstract_result(book, subject)
 
@@ -855,9 +952,9 @@ def generate_lesson(book: dict[str, Any], subject: str, concept: str, grade: str
             "mode": "fit_warning",
         }
 
-    sections, fallback_notice = generate_openai_lesson(book, subject, chosen_concept, grade, fit_result)
+    sections, fallback_notice = generate_openai_lesson(book, subject, chosen_concept, grade, fit_result, student_context)
     if sections is None:
-        sections = build_fallback_lesson(book, subject, chosen_concept, grade, fit_result)
+        sections = build_fallback_lesson(book, subject, chosen_concept, grade, fit_result, student_context)
 
     return {
         "warning": build_final_warning(fit_result, fallback_notice),
@@ -872,10 +969,14 @@ def generate_open_ended_question(
     book: dict[str, Any],
     subject: str,
     concept: str,
+    grade: str,
     fit_result: dict[str, Any],
+    student_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     reference_sentence = extract_reference_sentence(book)
     support_terms = build_support_terms(book, fit_result)
+    adaptive_profile = build_student_adaptive_profile(grade, student_context)
+    support_mode = adaptive_profile["support_mode"]
     concept_text = concept.title()
     if subject == "Math":
         prompt = f"Using this book detail, show how {concept_text} helps you think clearly: {reference_sentence}"
@@ -887,6 +988,10 @@ def generate_open_ended_question(
         prompt = f"What does this book detail teach you about {concept_text}? {reference_sentence}"
     else:
         prompt = f"What action, choice, or attitude in this line shows {concept_text}? {reference_sentence}"
+    if support_mode == "scaffolded":
+        prompt += " Use 1 or 2 short sentences."
+    elif support_mode == "stretch":
+        prompt += " Try to explain your thinking clearly, not just name the concept."
     return {
         "prompt": prompt,
         "expected_terms": support_terms[:4] or split_tokens(concept) or ["book"],
@@ -897,9 +1002,12 @@ def evaluate_open_ended_feedback(
     book: dict[str, Any],
     subject: str,
     concept: str,
+    grade: str,
     fit_result: dict[str, Any],
     answer: str,
+    student_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    adaptive_profile = build_student_adaptive_profile(grade, student_context)
     support_terms = build_support_terms(book, fit_result)[:4] or split_tokens(concept)
     keyword_feedback = build_keyword_feedback(answer, support_terms)
     matched_terms = keyword_feedback["matched_terms"]
@@ -930,7 +1038,11 @@ def evaluate_open_ended_feedback(
         else f"Hint: mention {context_phrase} and then explain why it shows {concept}."
     )
     encouragement = "Nice thinking. Your answer is moving in the right direction."
-    is_complete = bool(matched_terms) and answer_length >= 6 and ("because" in normalize_text(answer) or answer_length >= 10)
+    if adaptive_profile["support_mode"] == "stretch":
+        encouragement = "Strong start. Push your answer one step further by explaining the reason clearly."
+    elif adaptive_profile["support_mode"] == "scaffolded":
+        encouragement = "Good start. One more clear book detail will make this even better."
+    is_complete = bool(matched_terms) and answer_length >= int(adaptive_profile["reflect_min_words"]) and ("because" in normalize_text(answer) or answer_length >= int(adaptive_profile["reflect_min_words"]) + 2)
     return {
         "what_is_correct": what_is_correct,
         "what_is_missing": what_is_missing,
@@ -945,9 +1057,11 @@ def generate_applied_activity(
     subject: str,
     concept: str,
     fit_result: dict[str, Any],
+    grade: str,
+    student_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     examples, _, answers = build_examples_questions_answers(book, subject, concept)
-    prompt = build_activity(book, subject, concept)
+    prompt = build_activity(book, subject, concept, grade, student_context)
     return {
         "prompt": prompt,
         "sample_answer": answers[0] if answers else examples[0] if examples else f"Use the title and abstract to show {concept}.",
@@ -960,9 +1074,12 @@ def evaluate_activity_feedback(
     book: dict[str, Any],
     subject: str,
     concept: str,
+    grade: str,
     fit_result: dict[str, Any],
     answer: str,
+    student_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    adaptive_profile = build_student_adaptive_profile(grade, student_context)
     support_terms = build_support_terms(book, fit_result)[:4] or split_tokens(concept)
     keyword_feedback = build_keyword_feedback(answer, support_terms)
     matched_terms = keyword_feedback["matched_terms"]
@@ -979,6 +1096,11 @@ def evaluate_activity_feedback(
             "is_complete": False,
         }
     context_phrase = build_book_context_phrase(book, limit=2)
+    encouragement = "Good effort. You are close to a strong applied answer."
+    if adaptive_profile["support_mode"] == "stretch":
+        encouragement = "Good effort. Add a clearer explanation of why your example proves the concept."
+    elif adaptive_profile["support_mode"] == "scaffolded":
+        encouragement = "Good effort. Keep it simple and add one stronger book detail."
     return {
         "what_is_correct": (
             f"You used helpful book ideas like {', '.join(matched_terms[:2])}."
@@ -995,8 +1117,8 @@ def evaluate_activity_feedback(
             if missing_terms[:2]
             else f"Hint: use words like {context_phrase} and then show the concept in action."
         ),
-        "encouragement": "Good effort. You are close to a strong applied answer.",
-        "is_complete": bool(matched_terms) and concept_seen and answer_length >= 8,
+        "encouragement": encouragement,
+        "is_complete": bool(matched_terms) and concept_seen and answer_length >= int(adaptive_profile["activity_min_words"]),
     }
 
 
@@ -1006,13 +1128,20 @@ def generate_sequence_quiz(
     concept: str,
     grade: str,
     fit_result: dict[str, Any],
+    student_context: dict[str, Any] | None = None,
     *,
     simplified: bool = False,
 ) -> list[dict[str, Any]]:
     examples, questions, answers = build_examples_questions_answers(book, subject, concept)
     support_terms = build_support_terms(book, fit_result)
+    adaptive_profile = build_student_adaptive_profile(grade, student_context)
     quiz_items: list[dict[str, Any]] = []
-    mcq_count = 2 if simplified else 3
+    if simplified or adaptive_profile["support_mode"] == "scaffolded":
+        mcq_count = 2
+    elif adaptive_profile["support_mode"] == "stretch":
+        mcq_count = min(3, len(questions))
+    else:
+        mcq_count = 3
 
     for question, answer in zip(questions[:mcq_count], answers[:mcq_count]):
         distractors = [item for item in answers[:mcq_count] if item != answer][:2]
@@ -1032,6 +1161,8 @@ def generate_sequence_quiz(
                 "options": unique_options[:3],
                 "answer": answer,
                 "feedback": answer,
+                "pass_threshold": adaptive_profile["pass_threshold"],
+                "difficulty_label": adaptive_profile["quiz_depth"],
             }
         )
 
@@ -1040,6 +1171,8 @@ def generate_sequence_quiz(
         if not simplified
         else f"Write one short sentence that uses {concept} with one real book idea."
     )
+    if adaptive_profile["support_mode"] == "stretch" and not simplified:
+        short_prompt = f"In two short sentences, explain how {concept} works in this book and why that connection makes sense."
     quiz_items.append(
         {
             "question_type": "short",
@@ -1048,6 +1181,8 @@ def generate_sequence_quiz(
             "concept_terms": split_tokens(concept),
             "expected_terms": support_terms[:3] or split_tokens(concept),
             "feedback": f"Use the concept and one real book idea like {', '.join(support_terms[:2]) or concept}.",
+            "pass_threshold": adaptive_profile["pass_threshold"],
+            "difficulty_label": adaptive_profile["quiz_depth"],
         }
     )
     return quiz_items
@@ -1088,7 +1223,8 @@ def score_sequence_quiz(questions: list[dict[str, Any]], answers: list[str]) -> 
 
     total = len(questions)
     percentage = round((score / total) * 100, 1) if total else 0.0
-    passed = percentage >= 60.0
+    pass_threshold = float(questions[0].get("pass_threshold", 60.0)) if questions else 60.0
+    passed = percentage >= pass_threshold
     review_summary = (
         "You passed the learning check. Keep using the same book idea and concept connection."
         if passed
@@ -1099,6 +1235,7 @@ def score_sequence_quiz(questions: list[dict[str, Any]], answers: list[str]) -> 
         "score": score,
         "total_questions": total,
         "percentage": percentage,
+        "pass_threshold": pass_threshold,
         "passed": passed,
         "results": results,
         "summary": summary,
@@ -1121,8 +1258,15 @@ def learning_sequence_to_text(sequence: dict[str, Any]) -> str:
     return "\n\n".join(blocks)
 
 
-def generate_learning_sequence(book: dict[str, Any], subject: str, concept: str, grade: str) -> dict[str, Any]:
-    lesson = generate_lesson(book, subject, concept, grade)
+def generate_learning_sequence(
+    book: dict[str, Any],
+    subject: str,
+    concept: str,
+    grade: str,
+    student_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    adaptive_profile = build_student_adaptive_profile(grade, student_context)
+    lesson = generate_lesson(book, subject, concept, grade, student_context)
     chosen_concept = lesson.get("chosen_concept", concept.strip())
     fit_result = lesson.get("fit_result", {})
     if lesson.get("mode") == "fit_warning":
@@ -1133,17 +1277,19 @@ def generate_learning_sequence(book: dict[str, Any], subject: str, concept: str,
             "activity": None,
             "quiz_questions": [],
             "sequence_text": lesson_sections_to_text(lesson.get("sections", [])),
+            "adaptive_profile": adaptive_profile,
         }
 
-    reflect_question = generate_open_ended_question(book, subject, chosen_concept, fit_result)
-    activity = generate_applied_activity(book, subject, chosen_concept, fit_result)
-    quiz_questions = generate_sequence_quiz(book, subject, chosen_concept, grade, fit_result, simplified=False)
+    reflect_question = generate_open_ended_question(book, subject, chosen_concept, grade, fit_result, student_context)
+    activity = generate_applied_activity(book, subject, chosen_concept, fit_result, grade, student_context)
+    quiz_questions = generate_sequence_quiz(book, subject, chosen_concept, grade, fit_result, student_context, simplified=False)
     sequence = {
         "warning": lesson["warning"],
         "teach_sections": lesson["sections"],
         "chosen_concept": chosen_concept,
         "fit_result": fit_result,
         "mode": lesson.get("mode", "lesson"),
+        "adaptive_profile": adaptive_profile,
         "reflect_question": reflect_question,
         "activity": activity,
         "quiz_questions": quiz_questions,

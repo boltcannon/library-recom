@@ -226,6 +226,29 @@ USER_FEEDBACK_COLUMN_TYPES = {
     "created_at": "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
 }
 
+STUDENT_PREFERENCE_MEMORY_COLUMN_TYPES = {
+    "user_id": "INTEGER NOT NULL",
+    "preference_type": "TEXT NOT NULL",
+    "preference_value": "TEXT NOT NULL",
+    "signal_count": "INTEGER NOT NULL DEFAULT 0",
+    "last_signal": "TEXT",
+    "created_at": "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
+    "updated_at": "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
+}
+
+STUDENT_CONCEPT_MASTERY_COLUMN_TYPES = {
+    "user_id": "INTEGER NOT NULL",
+    "subject": "TEXT NOT NULL",
+    "concept": "TEXT NOT NULL",
+    "attempts": "INTEGER NOT NULL DEFAULT 0",
+    "passes": "INTEGER NOT NULL DEFAULT 0",
+    "average_score": "REAL",
+    "last_score": "REAL",
+    "mastery_band": "TEXT NOT NULL DEFAULT 'new'",
+    "created_at": "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
+    "updated_at": "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
+}
+
 APP_USER_ROLES = {"student", "admin"}
 
 
@@ -1232,6 +1255,61 @@ def _init_db_schema(config: DatabaseConfig) -> None:
     execute_query(
         config,
         f"""
+        CREATE TABLE IF NOT EXISTS student_preference_memory (
+            id {_id_column(config)},
+            user_id INTEGER NOT NULL,
+            preference_type TEXT NOT NULL,
+            preference_value TEXT NOT NULL,
+            signal_count INTEGER NOT NULL DEFAULT 0,
+            last_signal TEXT,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        """,
+    )
+    ensure_table_columns(config, "student_preference_memory", STUDENT_PREFERENCE_MEMORY_COLUMN_TYPES)
+    ensure_index(
+        config,
+        "idx_student_preference_memory_unique",
+        "student_preference_memory",
+        "user_id, preference_type, preference_value",
+        unique=True,
+    )
+    ensure_index(config, "idx_student_preference_memory_user", "student_preference_memory", "user_id")
+
+    execute_query(
+        config,
+        f"""
+        CREATE TABLE IF NOT EXISTS student_concept_mastery (
+            id {_id_column(config)},
+            user_id INTEGER NOT NULL,
+            subject TEXT NOT NULL,
+            concept TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            passes INTEGER NOT NULL DEFAULT 0,
+            average_score REAL,
+            last_score REAL,
+            mastery_band TEXT NOT NULL DEFAULT 'new',
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        """,
+    )
+    ensure_table_columns(config, "student_concept_mastery", STUDENT_CONCEPT_MASTERY_COLUMN_TYPES)
+    ensure_index(
+        config,
+        "idx_student_concept_mastery_unique",
+        "student_concept_mastery",
+        "user_id, subject, concept",
+        unique=True,
+    )
+    ensure_index(config, "idx_student_concept_mastery_user", "student_concept_mastery", "user_id")
+
+    execute_query(
+        config,
+        f"""
         CREATE TABLE IF NOT EXISTS catalog_uploads (
             id {_id_column(config)},
             imported_count INTEGER NOT NULL,
@@ -1338,15 +1416,6 @@ def create_user(
         """,
         (full_name.strip(), normalize_email(email), hash_password(password), normalized_role),
     )
-    if normalized_role == "student":
-        execute_query(
-            config,
-            """
-            INSERT INTO students (id, name, grade, preferred_language, favorite_topics, reading_comfort_level)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            """,
-            (user_id, full_name.strip(), "", "", "", ""),
-        )
     clear_data_caches()
     return user_id
 
@@ -1442,7 +1511,7 @@ def fetch_student_profile_for_user(config: DatabaseConfig, user_id: int) -> dict
     favorite_topics = str(legacy_profile.get("favorite_topics", "") or "").strip()
     reading_level = str(legacy_profile.get("reading_comfort_level", "") or "").strip()
 
-    if full_name or class_grade or preferred_language or favorite_topics or reading_level:
+    if class_grade or preferred_language or favorite_topics or reading_level:
         _upsert_student_profile_shadow(
             config,
             user_id,
@@ -1541,8 +1610,11 @@ def update_saved_book_status_for_user(
         record_id = _upsert_saved_book_shadow(config, user_id, book_id, status, completed_at)
 
     log_book_opened(config, user_id, book_id)
+    if save_value:
+        track_book_preference_memory(config, user_id, book_id, signal_name="saved")
     if read_value:
         mark_book_completed(config, user_id, book_id)
+        track_book_preference_memory(config, user_id, book_id, signal_name="read")
     clear_data_caches()
     return record_id
 
@@ -1746,6 +1818,8 @@ def create_recommendation_session(
         """,
         (student_id, str(grade or ""), json.dumps(preferences), json.dumps(compact_books)),
     )
+    if student_id is not None:
+        track_student_recommendation_preferences(config, int(student_id), preferences)
     clear_data_caches()
     return session_id
 
@@ -1763,6 +1837,7 @@ def log_selected_book(config: DatabaseConfig, session_id: int | None, book_id: i
     )
     if student_id is not None:
         log_book_opened(config, int(student_id), book_id)
+        track_book_preference_memory(config, int(student_id), book_id, signal_name="selected")
     clear_data_caches()
     return selected_id
 
@@ -1804,6 +1879,195 @@ def _json_loads(value: Any, fallback: Any) -> Any:
         return json.loads(value)
     except (TypeError, json.JSONDecodeError):
         return fallback
+
+
+def _normalize_memory_value(value: Any) -> str:
+    text = normalize_text_for_metrics(value)
+    return text[:120]
+
+
+def _score_to_mastery_band(score_percent: float | None, attempts: int, passes: int) -> str:
+    if attempts <= 0 or score_percent is None:
+        return "new"
+    if score_percent >= 85 and passes >= 2:
+        return "mastered"
+    if score_percent >= 70:
+        return "strong"
+    if score_percent >= 50:
+        return "developing"
+    return "support_needed"
+
+
+def _track_preference_signal(
+    config: DatabaseConfig,
+    user_id: int,
+    preference_type: str,
+    preference_value: str,
+    *,
+    signal_weight: int = 1,
+    last_signal: str = "",
+) -> None:
+    normalized_value = _normalize_memory_value(preference_value)
+    normalized_type = _normalize_memory_value(preference_type)
+    if not normalized_value or not normalized_type:
+        return
+    existing = fetch_one(
+        config,
+        """
+        SELECT id, signal_count
+        FROM student_preference_memory
+        WHERE user_id = %s AND preference_type = %s AND preference_value = %s
+        """,
+        (user_id, normalized_type, normalized_value),
+    )
+    if existing:
+        execute_query(
+            config,
+            """
+            UPDATE student_preference_memory
+            SET signal_count = %s,
+                last_signal = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            """,
+            (
+                int(existing.get("signal_count", 0) or 0) + max(1, int(signal_weight)),
+                last_signal.strip() or existing.get("last_signal"),
+                int(existing["id"]),
+            ),
+        )
+        return
+    execute_query(
+        config,
+        """
+        INSERT INTO student_preference_memory (
+            user_id, preference_type, preference_value, signal_count, last_signal
+        ) VALUES (%s, %s, %s, %s, %s)
+        """,
+        (user_id, normalized_type, normalized_value, max(1, int(signal_weight)), last_signal.strip() or None),
+    )
+
+
+def track_student_recommendation_preferences(
+    config: DatabaseConfig,
+    user_id: int,
+    preferences: dict[str, Any],
+) -> None:
+    init_db(config)
+    topic_parts = _split_csv_values(preferences.get("topics", ""))
+    for topic in topic_parts:
+        _track_preference_signal(config, user_id, "topic", topic, signal_weight=2, last_signal="recommendation_request")
+    for profile_topic in _split_csv_values(preferences.get("profile_topics", "")):
+        _track_preference_signal(config, user_id, "topic", profile_topic, signal_weight=1, last_signal="profile_match")
+    for key, preference_type in (
+        ("book_type", "book_type"),
+        ("length_type", "length"),
+        ("reading_level", "reading_level"),
+    ):
+        value = str(preferences.get(key, "") or "").strip()
+        if value and value.lower() != "any":
+            _track_preference_signal(config, user_id, preference_type, value, signal_weight=1, last_signal="recommendation_request")
+
+
+def track_book_preference_memory(
+    config: DatabaseConfig,
+    user_id: int,
+    book_id: int,
+    *,
+    signal_name: str,
+) -> None:
+    init_db(config)
+    book = fetch_book_by_id(config, book_id)
+    if not book:
+        return
+    signal_weight_map = {
+        "selected": 2,
+        "saved": 2,
+        "read": 3,
+    }
+    signal_weight = signal_weight_map.get(signal_name, 1)
+    for topic in _split_csv_values(book.get("subject_tags", "")):
+        _track_preference_signal(config, user_id, "topic", topic, signal_weight=signal_weight, last_signal=signal_name)
+    for genre in _split_csv_values(book.get("genre_tags", "")):
+        _track_preference_signal(config, user_id, "genre", genre, signal_weight=signal_weight, last_signal=signal_name)
+    for preference_type, key in (("length", "length_type"), ("reading_level", "reading_level"), ("item_type", "item_type")):
+        value = str(book.get(key, "") or "").strip()
+        if value:
+            _track_preference_signal(config, user_id, preference_type, value, signal_weight=signal_weight, last_signal=signal_name)
+
+
+def update_student_concept_mastery(
+    config: DatabaseConfig,
+    *,
+    user_id: int,
+    subject: str,
+    concept: str,
+    score_percent: float | None,
+    passed: bool,
+) -> None:
+    init_db(config)
+    normalized_subject = str(subject or "").strip()
+    normalized_concept = str(concept or "").strip()
+    if not normalized_subject or not normalized_concept:
+        return
+    existing = fetch_one(
+        config,
+        """
+        SELECT *
+        FROM student_concept_mastery
+        WHERE user_id = %s AND subject = %s AND concept = %s
+        """,
+        (user_id, normalized_subject, normalized_concept),
+    )
+    if existing:
+        attempts = int(existing.get("attempts", 0) or 0) + 1
+        passes = int(existing.get("passes", 0) or 0) + (1 if passed else 0)
+        previous_avg = existing.get("average_score")
+        if score_percent is not None:
+            if previous_avg is None:
+                average_score = float(score_percent)
+            else:
+                average_score = ((float(previous_avg) * float(attempts - 1)) + float(score_percent)) / float(attempts)
+            last_score = float(score_percent)
+        else:
+            average_score = float(previous_avg) if previous_avg is not None else None
+            last_score = existing.get("last_score")
+        mastery_band = _score_to_mastery_band(average_score, attempts, passes)
+        execute_query(
+            config,
+            """
+            UPDATE student_concept_mastery
+            SET attempts = %s,
+                passes = %s,
+                average_score = %s,
+                last_score = %s,
+                mastery_band = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            """,
+            (attempts, passes, average_score, last_score, mastery_band, int(existing["id"])),
+        )
+        return
+
+    mastery_band = _score_to_mastery_band(score_percent, 1, 1 if passed else 0)
+    execute_query(
+        config,
+        """
+        INSERT INTO student_concept_mastery (
+            user_id, subject, concept, attempts, passes, average_score, last_score, mastery_band
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            user_id,
+            normalized_subject,
+            normalized_concept,
+            1,
+            1 if passed else 0,
+            score_percent,
+            score_percent,
+            mastery_band,
+        ),
+    )
 
 
 def create_lesson_sequence(
@@ -1931,6 +2195,7 @@ def log_lesson_sequence_attempt(
     passed: bool,
 ) -> int:
     init_db(config)
+    sequence_row = fetch_one(config, "SELECT user_id, subject, concept FROM lesson_sequences WHERE id = %s", (sequence_id,))
     attempt_id = insert_and_get_id(
         config,
         """
@@ -1964,6 +2229,16 @@ def log_lesson_sequence_attempt(
             passed,
         ),
     )
+    if sequence_row:
+        score_percent = round((float(quiz_score) / float(total_questions)) * 100.0, 1) if quiz_score is not None and total_questions else None
+        update_student_concept_mastery(
+            config,
+            user_id=int(sequence_row["user_id"]),
+            subject=str(sequence_row.get("subject", "") or ""),
+            concept=str(sequence_row.get("concept", "") or ""),
+            score_percent=score_percent,
+            passed=bool(passed),
+        )
     clear_data_caches()
     return attempt_id
 
@@ -1977,6 +2252,90 @@ def _deserialize_lesson_sequence(row: dict[str, Any] | None) -> dict[str, Any] |
     sequence["quiz_payload"] = _json_loads(sequence.get("quiz_payload"), [])
     sequence["quiz_answers"] = _json_loads(sequence.get("quiz_answers"), [])
     return sequence
+
+
+def _split_csv_values(value: Any) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    parts = [part.strip() for part in text.split(",")]
+    return [part for part in parts if part]
+
+
+def normalize_text_for_metrics(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _top_items_from_counts(counts: dict[str, int], limit: int = 3) -> list[str]:
+    return [
+        item
+        for item, _ in sorted(counts.items(), key=lambda pair: (-pair[1], pair[0].lower()))[:limit]
+    ]
+
+
+def _compute_preference_confidence(weighted_score: float) -> str:
+    if weighted_score >= 7.5:
+        return "high"
+    if weighted_score >= 4.0:
+        return "medium"
+    return "emerging"
+
+
+def _build_weighted_memory_preferences(
+    memory_df: pd.DataFrame,
+    preference_type: str,
+    *,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    if memory_df.empty or "preference_type" not in memory_df.columns:
+        return []
+
+    filtered_df = memory_df[memory_df["preference_type"] == preference_type].copy()
+    if filtered_df.empty:
+        return []
+
+    if "updated_at" in filtered_df.columns:
+        filtered_df["updated_at"] = pd.to_datetime(filtered_df["updated_at"], errors="coerce", utc=True)
+    else:
+        filtered_df["updated_at"] = pd.NaT
+
+    now_ts = pd.Timestamp.now(tz="UTC")
+    weighted_rows: list[dict[str, Any]] = []
+    for _, row in filtered_df.iterrows():
+        raw_value = str(row.get("preference_value", "") or "").strip()
+        if not raw_value:
+            continue
+        signal_count = float(row.get("signal_count", 0) or 0)
+        updated_at = row.get("updated_at")
+        recency_bonus = 0.0
+        if pd.notna(updated_at):
+            age_days = max(0.0, float((now_ts - updated_at).total_seconds() / 86400.0))
+            if age_days <= 3:
+                recency_bonus = 2.5
+            elif age_days <= 7:
+                recency_bonus = 1.5
+            elif age_days <= 21:
+                recency_bonus = 0.8
+            else:
+                recency_bonus = 0.2
+        weighted_score = round(signal_count + recency_bonus, 2)
+        weighted_rows.append(
+            {
+                "value": raw_value,
+                "signal_count": int(signal_count),
+                "recency_bonus": recency_bonus,
+                "weighted_score": weighted_score,
+                "confidence": _compute_preference_confidence(weighted_score),
+                "last_signal": str(row.get("last_signal", "") or "").strip(),
+            }
+        )
+
+    return sorted(
+        weighted_rows,
+        key=lambda item: (-float(item["weighted_score"]), -int(item["signal_count"]), item["value"].lower()),
+    )[:limit]
 
 
 @st.cache_data(show_spinner=False)
@@ -2084,6 +2443,30 @@ def fetch_student_dashboard_data_for_user(config: DatabaseConfig, user_id: int) 
         "SELECT favorite_topics FROM student_profiles WHERE user_id = %s",
         (user_id,),
     )
+    preference_memory_df = pd.DataFrame(
+        fetch_all(
+            config,
+            """
+            SELECT preference_type, preference_value, signal_count, last_signal, updated_at
+            FROM student_preference_memory
+            WHERE user_id = %s
+            ORDER BY signal_count DESC, updated_at DESC
+            """,
+            (user_id,),
+        )
+    )
+    concept_mastery_df = pd.DataFrame(
+        fetch_all(
+            config,
+            """
+            SELECT subject, concept, attempts, passes, average_score, last_score, mastery_band, updated_at
+            FROM student_concept_mastery
+            WHERE user_id = %s
+            ORDER BY updated_at DESC, concept ASC
+            """,
+            (user_id,),
+        )
+    )
     recommendation_sessions_rows = fetch_all(
         config,
         """
@@ -2098,7 +2481,15 @@ def fetch_student_dashboard_data_for_user(config: DatabaseConfig, user_id: int) 
         fetch_all(
             config,
             """
-            SELECT sb.book_id, sb.created_at, books.title, books.author
+            SELECT
+                sb.book_id,
+                sb.created_at,
+                books.title,
+                books.author,
+                books.subject_tags,
+                books.genre_tags,
+                books.length_type,
+                books.reading_level
             FROM selected_books sb
             JOIN books ON books.id = sb.book_id
             WHERE sb.student_id = %s
@@ -2163,6 +2554,10 @@ def fetch_student_dashboard_data_for_user(config: DatabaseConfig, user_id: int) 
                 saved_books.book_id,
                 books.title,
                 books.author,
+                books.subject_tags,
+                books.genre_tags,
+                books.length_type,
+                books.reading_level,
                 saved_books.status,
                 history.opened_at,
                 history.completed_at
@@ -2262,6 +2657,123 @@ def fetch_student_dashboard_data_for_user(config: DatabaseConfig, user_id: int) 
 
     recommended_history = pd.DataFrame(recommended_rows).head(20)
 
+    topic_counts: dict[str, int] = {}
+    genre_counts: dict[str, int] = {}
+    length_counts: dict[str, int] = {}
+    subject_strength_counts: dict[str, int] = {}
+    concept_strength_counts: dict[str, int] = {}
+    concept_support_counts: dict[str, int] = {}
+
+    def add_count(bucket: dict[str, int], value: str) -> None:
+        normalized = str(value or "").strip()
+        if normalized:
+            bucket[normalized] = bucket.get(normalized, 0) + 1
+
+    for _, row in reading_history.iterrows():
+        for topic in _split_csv_values(row.get("subject_tags", "")):
+            add_count(topic_counts, topic)
+        for genre in _split_csv_values(row.get("genre_tags", "")):
+            add_count(genre_counts, genre)
+        add_count(length_counts, str(row.get("length_type", "")))
+
+    for _, row in selected_history.iterrows():
+        for topic in _split_csv_values(row.get("subject_tags", "")):
+            add_count(topic_counts, topic)
+        for genre in _split_csv_values(row.get("genre_tags", "")):
+            add_count(genre_counts, genre)
+        add_count(length_counts, str(row.get("length_type", "")))
+
+    for _, row in lesson_history.iterrows():
+        add_count(subject_strength_counts, str(row.get("subject", "")))
+        if bool(row.get("passed")):
+            add_count(concept_strength_counts, str(row.get("concept", "")))
+        else:
+            add_count(concept_support_counts, str(row.get("concept", "")))
+
+    weighted_topic_memory = _build_weighted_memory_preferences(preference_memory_df, "topic", limit=5)
+    weighted_genre_memory = _build_weighted_memory_preferences(preference_memory_df, "genre", limit=4)
+    weighted_length_memory = _build_weighted_memory_preferences(preference_memory_df, "length", limit=3)
+
+    for item in weighted_topic_memory:
+        topic_counts[item["value"]] = topic_counts.get(item["value"], 0) + max(1, int(round(float(item["weighted_score"]))))
+    for item in weighted_genre_memory:
+        genre_counts[item["value"]] = genre_counts.get(item["value"], 0) + max(1, int(round(float(item["weighted_score"]))))
+    for item in weighted_length_memory:
+        length_counts[item["value"]] = length_counts.get(item["value"], 0) + max(1, int(round(float(item["weighted_score"]))))
+
+    if not concept_mastery_df.empty:
+        for _, row in concept_mastery_df.iterrows():
+            mastery_band = str(row.get("mastery_band", "") or "").strip()
+            subject_value = str(row.get("subject", "") or "").strip()
+            concept_value = str(row.get("concept", "") or "").strip()
+            if mastery_band in {"mastered", "strong"}:
+                add_count(subject_strength_counts, subject_value)
+                add_count(concept_strength_counts, concept_value)
+            elif mastery_band in {"developing", "support_needed"}:
+                add_count(concept_support_counts, concept_value)
+
+    favorite_topics_list = _split_csv_values(profile_row["favorite_topics"]) if profile_row and profile_row.get("favorite_topics") else []
+    interest_topics = favorite_topics_list[:]
+    for topic in _top_items_from_counts(topic_counts, limit=4):
+        if topic not in interest_topics:
+            interest_topics.append(topic)
+    preferred_genres = _top_items_from_counts(genre_counts, limit=3)
+    preferred_lengths = _top_items_from_counts(length_counts, limit=2)
+    strongest_subjects = _top_items_from_counts(subject_strength_counts, limit=3)
+    strongest_concepts = _top_items_from_counts(concept_strength_counts, limit=4)
+    weak_concepts = _top_items_from_counts(concept_support_counts, limit=3)
+    mastered_concepts = []
+    if not concept_mastery_df.empty and "mastery_band" in concept_mastery_df.columns:
+        mastered_rows = concept_mastery_df[concept_mastery_df["mastery_band"].isin(["mastered", "strong"])]
+        for concept in mastered_rows["concept"].fillna("").tolist():
+            concept_value = str(concept).strip()
+            if concept_value and concept_value not in mastered_concepts:
+                mastered_concepts.append(concept_value)
+            if len(mastered_concepts) >= 4:
+                break
+
+    avg_quiz_percent = round(float(quiz_stats_row["avg_percent"]), 1) if quiz_stats_row and quiz_stats_row.get("avg_percent") is not None else None
+    if avg_quiz_percent is None:
+        quiz_band = "just getting started"
+    elif avg_quiz_percent >= 80:
+        quiz_band = "confident"
+    elif avg_quiz_percent >= 60:
+        quiz_band = "growing"
+    else:
+        quiz_band = "needs support"
+
+    if weak_concepts:
+        next_focus = f"Practice {weak_concepts[0]} again with a simpler book match."
+    elif strongest_concepts:
+        next_focus = f"Build on {strongest_concepts[0]} with a new book."
+    elif interest_topics:
+        next_focus = f"Try another book around {interest_topics[0]}."
+    else:
+        next_focus = "Explore a new topic and build your reading profile."
+
+    preference_confidence = "emerging"
+    if weighted_topic_memory:
+        preference_confidence = weighted_topic_memory[0]["confidence"]
+    elif weighted_genre_memory:
+        preference_confidence = weighted_genre_memory[0]["confidence"]
+    preference_memory_display = pd.DataFrame(
+        [
+            {
+                "preference_type": item_type,
+                "preference_value": item["value"],
+                "weighted_score": item["weighted_score"],
+                "confidence": item["confidence"].title(),
+                "last_signal": item["last_signal"] or "recent activity",
+            }
+            for item_type, items in (
+                ("topic", weighted_topic_memory),
+                ("genre", weighted_genre_memory),
+                ("length", weighted_length_memory),
+            )
+            for item in items
+        ]
+    )
+
     return {
         "total_books_explored": len(explored_ids),
         "total_books_saved": int(books_saved_row["count"]) if books_saved_row else 0,
@@ -2270,11 +2782,29 @@ def fetch_student_dashboard_data_for_user(config: DatabaseConfig, user_id: int) 
         "total_lessons_completed": int(lesson_stats_row["completed_count"]) if lesson_stats_row and lesson_stats_row.get("completed_count") is not None else 0,
         "total_quizzes_passed": int(lesson_stats_row["passed_count"]) if lesson_stats_row and lesson_stats_row.get("passed_count") is not None else 0,
         "quiz_attempts": int(quiz_stats_row["attempt_count"]) if quiz_stats_row and quiz_stats_row.get("attempt_count") is not None else 0,
-        "quiz_average_percent": round(float(quiz_stats_row["avg_percent"]), 1) if quiz_stats_row and quiz_stats_row.get("avg_percent") is not None else None,
+        "quiz_average_percent": avg_quiz_percent,
         "favorite_topics": profile_row["favorite_topics"] if profile_row and profile_row.get("favorite_topics") else "",
         "last_selected_book_id": last_selected_book_id,
         "last_lesson_book_id": last_lesson_book_id,
         "recent_concepts_learned": recent_concepts,
+        "learning_profile": {
+            "interest_topics": interest_topics[:5],
+            "favorite_topics": favorite_topics_list[:5],
+            "preferred_genres": preferred_genres,
+            "preferred_lengths": preferred_lengths,
+            "weighted_topics": weighted_topic_memory,
+            "weighted_genres": weighted_genre_memory,
+            "weighted_lengths": weighted_length_memory,
+            "preference_confidence": preference_confidence,
+            "strongest_subjects": strongest_subjects,
+            "strongest_concepts": strongest_concepts,
+            "mastered_concepts": mastered_concepts,
+            "weak_concepts": weak_concepts,
+            "quiz_band": quiz_band,
+            "next_focus": next_focus,
+        },
+        "preference_memory": preference_memory_display if not preference_memory_display.empty else preference_memory_df,
+        "concept_mastery": concept_mastery_df,
         "recent_activity": recent_activity,
         "recommended_history": recommended_history,
         "selected_history": selected_history,
@@ -2329,6 +2859,212 @@ def fetch_dashboard_metrics(config: DatabaseConfig) -> dict[str, Any]:
             """,
         )
     )
+    lesson_effectiveness_df = pd.DataFrame(
+        fetch_all(
+            config,
+            """
+            SELECT
+                books.title,
+                books.author,
+                COUNT(lesson_sequences.id) AS lesson_count,
+                SUM(CASE WHEN lesson_sequences.passed THEN 1 ELSE 0 END) AS passed_count
+            FROM lesson_sequences
+            JOIN books ON books.id = lesson_sequences.book_id
+            GROUP BY lesson_sequences.book_id, books.title, books.author
+            ORDER BY lesson_count DESC, passed_count DESC, LOWER(COALESCE(books.title, ''))
+            LIMIT 5
+            """,
+        )
+    )
+    concept_effectiveness_df = pd.DataFrame(
+        fetch_all(
+            config,
+            """
+            SELECT
+                concept,
+                COUNT(*) AS attempt_count,
+                SUM(CASE WHEN passed THEN 1 ELSE 0 END) AS passed_count,
+                ROUND(
+                    AVG(
+                        CASE
+                            WHEN total_questions > 0 THEN (quiz_score * 100.0 / total_questions)
+                            ELSE NULL
+                        END
+                    ),
+                    1
+                ) AS average_score
+            FROM lesson_sequences
+            GROUP BY concept
+            ORDER BY attempt_count DESC, LOWER(COALESCE(concept, ''))
+            LIMIT 8
+            """,
+        )
+    )
+    subject_scores_df = pd.DataFrame(
+        fetch_all(
+            config,
+            """
+            SELECT
+                subject,
+                COUNT(*) AS lesson_count,
+                ROUND(
+                    AVG(
+                        CASE
+                            WHEN total_questions > 0 THEN (quiz_score * 100.0 / total_questions)
+                            ELSE NULL
+                        END
+                    ),
+                    1
+                ) AS average_score,
+                SUM(CASE WHEN passed THEN 1 ELSE 0 END) AS passed_count
+            FROM lesson_sequences
+            GROUP BY subject
+            ORDER BY lesson_count DESC, LOWER(COALESCE(subject, ''))
+            LIMIT 8
+            """,
+        )
+    )
+    struggling_concepts_df = pd.DataFrame(
+        fetch_all(
+            config,
+            """
+            SELECT
+                concept,
+                COUNT(*) AS retry_or_fail_count
+            FROM lesson_sequences
+            WHERE (passed = FALSE AND quiz_score IS NOT NULL) OR retry_count > 0
+            GROUP BY concept
+            ORDER BY retry_or_fail_count DESC, LOWER(COALESCE(concept, ''))
+            LIMIT 5
+            """,
+        )
+    )
+    profile_topics_rows = fetch_all(config, "SELECT favorite_topics FROM student_profiles")
+    recommendation_pref_rows = fetch_all(config, "SELECT preferences_json FROM recommendation_sessions")
+    genre_rows = fetch_all(
+        config,
+        """
+        SELECT books.genre_tags
+        FROM selected_books
+        JOIN books ON books.id = selected_books.book_id
+        """
+    )
+
+    favorite_topic_counts: dict[str, int] = {}
+    recommendation_theme_counts: dict[str, int] = {}
+    genre_interest_counts: dict[str, int] = {}
+
+    def add_counts_from_values(bucket: dict[str, int], values: list[str]) -> None:
+        for value in values:
+            normalized = str(value or "").strip()
+            if normalized:
+                bucket[normalized] = bucket.get(normalized, 0) + 1
+
+    for row in profile_topics_rows:
+        add_counts_from_values(favorite_topic_counts, _split_csv_values(row.get("favorite_topics", "")))
+
+    for row in recommendation_pref_rows:
+        preferences = _json_loads(row.get("preferences_json"), {}) or {}
+        topic_values: list[str] = []
+        if isinstance(preferences, dict):
+            for key in ("topics", "message"):
+                raw_value = str(preferences.get(key, "") or "").strip()
+                if raw_value:
+                    if key == "message":
+                        topic_values.extend([part for part in re.split(r"[,/;]| and ", raw_value) if part.strip()])
+                    else:
+                        topic_values.extend(_split_csv_values(raw_value))
+        cleaned_values = [normalize_text_for_metrics(value) for value in topic_values]
+        add_counts_from_values(recommendation_theme_counts, [value for value in cleaned_values if value])
+
+    for row in genre_rows:
+        add_counts_from_values(genre_interest_counts, _split_csv_values(row.get("genre_tags", "")))
+
+    favorite_topics_df = pd.DataFrame(
+        [
+            {"topic": topic, "student_count": count}
+            for topic, count in sorted(favorite_topic_counts.items(), key=lambda item: (-item[1], item[0].lower()))[:5]
+        ]
+    )
+    remembered_topics_raw_df = pd.DataFrame(
+        fetch_all(
+            config,
+            """
+            SELECT preference_value, signal_count, last_signal, updated_at
+            FROM student_preference_memory
+            WHERE preference_type = 'topic'
+            """
+        )
+    )
+    remembered_topics_weighted = _build_weighted_memory_preferences(
+        remembered_topics_raw_df.assign(preference_type="topic") if not remembered_topics_raw_df.empty else pd.DataFrame(),
+        "topic",
+        limit=5,
+    )
+    remembered_topics_df = pd.DataFrame(
+        [
+            {
+                "topic": item["value"],
+                "memory_strength": item["weighted_score"],
+                "confidence": item["confidence"].title(),
+            }
+            for item in remembered_topics_weighted
+        ]
+    )
+    recommendation_themes_df = pd.DataFrame(
+        [
+            {"theme": theme, "request_count": count}
+            for theme, count in sorted(recommendation_theme_counts.items(), key=lambda item: (-item[1], item[0].lower()))[:5]
+        ]
+    )
+    top_genres_df = pd.DataFrame(
+        [
+            {"genre": genre, "selection_count": count}
+            for genre, count in sorted(genre_interest_counts.items(), key=lambda item: (-item[1], item[0].lower()))[:5]
+        ]
+    )
+
+    if not lesson_effectiveness_df.empty:
+        lesson_effectiveness_df["conversion_rate"] = lesson_effectiveness_df.apply(
+            lambda row: round((float(row["passed_count"]) / float(row["lesson_count"])) * 100.0, 1)
+            if row.get("lesson_count")
+            else 0.0,
+            axis=1,
+        )
+    if not concept_effectiveness_df.empty:
+        concept_effectiveness_df["pass_rate"] = concept_effectiveness_df.apply(
+            lambda row: round((float(row["passed_count"]) / float(row["attempt_count"])) * 100.0, 1)
+            if row.get("attempt_count")
+            else 0.0,
+            axis=1,
+        )
+    if not subject_scores_df.empty:
+        subject_scores_df["pass_rate"] = subject_scores_df.apply(
+            lambda row: round((float(row["passed_count"]) / float(row["lesson_count"])) * 100.0, 1)
+            if row.get("lesson_count")
+            else 0.0,
+            axis=1,
+        )
+
+    support_needed_row = fetch_one(
+        config,
+        """
+        SELECT COUNT(*) AS count
+        FROM lesson_sequences
+        WHERE (passed = FALSE AND quiz_score IS NOT NULL) OR retry_count > 0
+        """,
+    )
+    mastery_band_df = pd.DataFrame(
+        fetch_all(
+            config,
+            """
+            SELECT mastery_band, COUNT(*) AS concept_count
+            FROM student_concept_mastery
+            GROUP BY mastery_band
+            ORDER BY concept_count DESC, LOWER(COALESCE(mastery_band, ''))
+            """
+        )
+    )
     return {
         "total_uploads": int(total_uploads_row["count"]) if total_uploads_row else 0,
         "total_books": int(total_books_row["count"]) if total_books_row else 0,
@@ -2348,6 +3084,16 @@ def fetch_dashboard_metrics(config: DatabaseConfig) -> dict[str, Any]:
         ),
         "most_selected_books": selected_books_df,
         "most_attempted_concepts": concept_attempts_df,
+        "favorite_topics": favorite_topics_df,
+        "remembered_topics": remembered_topics_df,
+        "recommendation_themes": recommendation_themes_df,
+        "top_genres": top_genres_df,
+        "lesson_effectiveness_books": lesson_effectiveness_df,
+        "concept_effectiveness": concept_effectiveness_df,
+        "subject_scores": subject_scores_df,
+        "struggling_concepts": struggling_concepts_df,
+        "mastery_bands": mastery_band_df,
+        "support_needed_count": int(support_needed_row["count"]) if support_needed_row and support_needed_row.get("count") is not None else 0,
     }
 
 
